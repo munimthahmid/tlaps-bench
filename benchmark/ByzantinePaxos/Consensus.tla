@@ -1,11 +1,10 @@
----- MODULE BPConProof_QuorumNonEmpty ----
-EXTENDS FiniteSets, Integers, Naturals, TLAPS, TLC
-(* ---- Content from module Consensus ---- *)
+----------------------------- MODULE Consensus ------------------------------ 
 (***************************************************************************)
 (* The consensus problem requires a set of processes to choose a single    *)
 (* value.  This module specifies the problem by specifying exactly what    *)
 (* the requirements are for choosing a value.                              *)
 (***************************************************************************)
+EXTENDS Naturals, FiniteSets, TLAPS
 
 (***************************************************************************)
 (* We let the constant parameter Value be the set of all values that can   *)
@@ -247,20 +246,8 @@ THEOREM LiveSpecEquals ==
           LiveSpec <=> Spec /\ ([]<><<Next>>_vars \/ []<>(chosen # {}))
   PROOF OMITTED
 
------------------------------------------------------------------------------
-CONSTANT Value,     \* As in module Consensus, the set of choosable values.
-         Acceptor,  \* The set of all acceptors.
-         Quorum     \* The set of all quorums.
- 
-(***************************************************************************)
-(* The following assumption asserts that a quorum is a set of acceptors,   *)
-(* and the fundamental assumption we make about quorums: any two quorums   *)
-(* have a non-empty intersection.                                          *)
-(***************************************************************************)
-ASSUME QA == /\ \A Q \in Quorum : Q \subseteq Acceptor
-             /\ \A Q1, Q2 \in Quorum : Q1 \cap Q2 # {}  
- 
-THEOREM QuorumNonEmpty == \A Q \in Quorum : Q # {}
-PROOF OBVIOUS
-
-========================================
+=============================================================================
+\* Modification History
+\* Last modified Sat Nov 16 22:17:07 CST 2019 by hengxin
+\* Last modified Tue Feb 14 13:35:49 PST 2012 by lamport
+\* Last modified Mon Feb 07 14:46:59 PST 2011 by lamport

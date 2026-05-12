@@ -1,63 +1,10 @@
----- MODULE Paxos_SafeAtStable ----
-EXTENDS FiniteSets, Integers, Naturals, TLAPS, TLC
-(* ---- Content from module Consensus ---- *)
-(***************************************************************************)
-(* This is a trivial specification of consensus.  It asserts that the      *)
-(* variable `chosen', which represents the set of values that someone      *)
-(* might think has been chosen is initially empty and can be changed only  *)
-(* by adding a single element to it.                                       *)
-(***************************************************************************)
------------------------------------------------------------------------------
-CONSTANTS Values \* the set of all values that can be chosen
-
-VARIABLES chosen \* the set of all values that have been chosen
-
-TypeOK ==
-    /\ chosen \subseteq Values
-    /\ IsFiniteSet(chosen)
------------------------------------------------------------------------------
-Init == chosen = {}
-
-Next == /\ chosen = {}
-        /\ \E v \in Values : chosen' = {v}
-        
-Spec == Init /\ [][Next]_chosen
------------------------------------------------------------------------------
-Inv == Cardinality(chosen) <= 1
-    \* /\ TypeOK
-    \* /\ Cardinality(chosen) <= 1
-
-THEOREM Spec => []Inv
-<1>1. Init => Inv
-  BY DEF Init, Inv
-  (*
-  <2> SUFFICES ASSUME Init
-               PROVE  Inv
-    OBVIOUS
-  <2> QED
-    BY DEF Init, Inv
-  *)
-  
-<1>2. Inv /\ [Next]_chosen => Inv'
-  <2> SUFFICES ASSUME Inv,
-                      [Next]_chosen
-               PROVE  Inv'
-    OBVIOUS
-  <2>1. CASE Next
-    BY <2>1 DEF Inv, Next
-  <2>2. CASE UNCHANGED chosen
-    BY <2>2 DEF Inv, Next
-  <2>3. QED
-    BY <2>1, <2>2
-  
-<1>3. QED
-  BY <1>1, <1>2, PTL DEF Spec
-
+------------------------------- MODULE Paxos_SafeAtStable -------------------------------
 (* 
 Specification and Verification of Basic Paxos.
 
 See http://research.microsoft.com/en-us/um/people/lamport/pubs/pubs.html#paxos-simple
 *)
+EXTENDS Integers, TLAPS, TLC
 -----------------------------------------------------------------------------
 CONSTANTS Acceptors, Values, Quorums
 
@@ -195,6 +142,14 @@ LEMMA VotedOnce == \* OneValuePerBallot in Voting (TODO: Where/How/Why is it use
                        VotedForIn(a1, v1, b) /\ VotedForIn(a2, v2, b) => (v1 = v2)
   PROOF OMITTED
 
+AccInv ==
+  \A a \in Acceptors:
+    /\ (maxVal[a] = None) <=> (maxVBal[a] = -1)
+    /\ maxVBal[a] =< maxBal[a]
+    \* conjunct strengthened corresponding to MsgInv 2014/04/02 sm
+    /\ (maxVBal[a] >= 0) => VotedForIn(a, maxVal[a], maxVBal[a])  \* SafeAt(maxVal[a], maxVBal[a])
+    \* conjunct added corresponding to MsgInv 2014/03/29 sm
+    /\ \A c \in Ballots : c > maxVBal[a] => ~ \E v \in Values : VotedForIn(a, v, c)
 -----------------------------------------------------------------------------
 Inv == TypeOK /\ MsgInv /\ AccInv
 -----------------------------------------------------------------------------
@@ -208,4 +163,4 @@ LEMMA SafeAtStable == Inv /\ Next /\ TypeOK' =>
                                   SafeAt(v, b) => SafeAt(v, b)'
 PROOF OBVIOUS
 
-========================================
+=============================================================================

@@ -1,5 +1,5 @@
 ---- MODULE PaxosProof_IsBijectionInverse ----
-EXTENDS FiniteSets, Integers, NaturalsInduction, TLAPS
+EXTENDS Integers, NaturalsInduction, TLAPS
 (* ---- Content from module Sets ---- *)
   \** NB: Module NaturalsInduction comes from the TLAPS library, usually
   \** installed in /usr/local/lib/tlaps. Make sure this is in your Toolbox

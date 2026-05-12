@@ -1,6 +1,5 @@
----- MODULE Voting_FiniteSubset ----
-EXTENDS FiniteSets, Integers, NaturalsInduction, TLAPS
-(* ---- Content from module Sets ---- *)
+-------------------------------- MODULE Sets --------------------------------
+EXTENDS Integers, NaturalsInduction, TLAPS
   \** NB: Module NaturalsInduction comes from the TLAPS library, usually
   \** installed in /usr/local/lib/tlaps. Make sure this is in your Toolbox
   \** search path, see Preferences/TLA+ Preferences.
@@ -99,6 +98,41 @@ THEOREM FiniteSubset ==
   ASSUME NEW S, NEW TT, IsFiniteSet(TT), S \subseteq TT
   PROVE  /\ IsFiniteSet(S)
          /\ Cardinality(S) \leq Cardinality(TT)
-PROOF OBVIOUS
+  PROOF OMITTED
 
-========================================
+-------------------------------------------------------
+
+THEOREM CardinalityUnion ==
+          \A S, T : IsFiniteSet(S) /\ IsFiniteSet(T) =>
+                      /\ IsFiniteSet(S \cup T)
+                      /\ IsFiniteSet(S \cap T)
+                      /\ Cardinality(S \cup T) =
+                              Cardinality(S) + Cardinality(T)
+                              - Cardinality(S \cap T)  
+
+-----------------------------------------------------------------------------
+
+THEOREM PigeonHole ==
+            \A S, T : /\ IsFiniteSet(S)
+                      /\ IsFiniteSet(T)
+                      /\ Cardinality(T) < Cardinality(S)
+                      => \A f \in [S -> T] :
+                           \E x, y \in S : x # y /\ f[x] = f[y]
+  PROOF OMITTED
+
+-------------------------------------------------------
+
+THEOREM \A S, T , f :  /\ IsFiniteSet(S)
+                       /\ f \in [S -> T]
+                       /\ \A y \in T : \E x \in S : y = f[x]
+                       => /\ IsFiniteSet(T)
+                          /\ Cardinality(T) \leq Cardinality(S)
+PROOF OMITTED
+
+THEOREM ProductFinite ==
+     \A S, T : IsFiniteSet(S) /\ IsFiniteSet(T) => IsFiniteSet(S \X T)
+PROOF OMITTED
+
+THEOREM SubsetsFinite == \A S : IsFiniteSet(S) => IsFiniteSet(SUBSET S)
+PROOF OMITTED
+=============================================================================

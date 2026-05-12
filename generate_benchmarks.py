@@ -6,8 +6,9 @@ For each THEOREM/LEMMA/COROLLARY/PROPOSITION with a proof in the source files,
 generate a standalone .tla file where:
 - All preceding theorems are admitted (PROOF OMITTED)
 - The target theorem has its proof stripped (so TLAPS will fail, requiring proof)
-- Files with local EXTENDS/INSTANCE dependencies are merged into a single file
-- Each benchmark file is standalone
+- Files with local EXTENDS dependencies are merged into the benchmark file
+- Files with INSTANCE dependencies have dependency files copied alongside
+- Each benchmark file works standalone (with its dependency files)
 """
 
 import os
@@ -91,6 +92,60 @@ def get_local_dependencies(content, available_modules):
         if mod in available_modules:
             deps.add(mod)
     return deps
+
+
+def get_extends_dependencies(content, available_modules):
+    """Get set of local module names this content EXTENDS (safe to merge)."""
+    deps = set()
+    for ext in parse_extends(content):
+        if ext in available_modules and ext not in STDLIB_MODULES:
+            deps.add(ext)
+    return deps
+
+
+def get_instance_dependencies(content, available_modules):
+    """Get set of local module names this content INSTANCEs (need to copy, not merge)."""
+    deps = set()
+    for _, mod in parse_instances(content):
+        if mod in available_modules:
+            deps.add(mod)
+    return deps
+
+
+def get_all_instance_deps(mod, files_by_module, visited=None):
+    """Get all transitive INSTANCE + EXTENDS dependencies that need to be copied as files."""
+    if visited is None:
+        visited = set()
+    filepath = files_by_module.get(mod)
+    if not filepath:
+        return visited
+    with open(filepath, 'r') as f:
+        content = f.read()
+    available = set(files_by_module.keys())
+    # All dependencies of INSTANCE'd modules (both EXTENDS and INSTANCE) need to be copied
+    for _, inst_mod in parse_instances(content):
+        if inst_mod in available and inst_mod not in visited:
+            visited.add(inst_mod)
+            # Recursively get all deps of this module
+            get_all_file_deps(inst_mod, files_by_module, visited)
+    return visited
+
+
+def get_all_file_deps(mod, files_by_module, visited=None):
+    """Get ALL transitive dependencies of a module (both EXTENDS and INSTANCE)."""
+    if visited is None:
+        visited = set()
+    filepath = files_by_module.get(mod)
+    if not filepath:
+        return visited
+    with open(filepath, 'r') as f:
+        content = f.read()
+    available = set(files_by_module.keys())
+    for dep in get_local_dependencies(content, available):
+        if dep not in visited:
+            visited.add(dep)
+            get_all_file_deps(dep, files_by_module, visited)
+    return visited
 
 
 def build_dependency_graph(files_by_module):
@@ -179,7 +234,7 @@ def find_proof_end(lines, start_idx):
             orig_line = lines[i]
             if orig_line and not orig_line[0].isspace():
                 # At column 0, not indented
-                if re.match(r'^[A-Z]\w*(\(.*?\))?\s*==\s', line) and not re.match(r'^<\d+>', line):
+                if re.match(r'^\w+(\(.*?\))?\s*==(\s|$)', line) and not re.match(r'^<\d+>', line):
                     return i - 1
                 # Top-level CONSTANT/VARIABLE declarations (at column 0, not indented)
                 if re.match(r'^(CONSTANT|CONSTANTS|VARIABLE|VARIABLES)\s', line):
@@ -197,9 +252,32 @@ def parse_theorems(lines):
     """
     theorems = []
     i = 0
+    comment_depth = 0
 
     while i < len(lines):
         line = lines[i].strip()
+
+        # Skip lines inside block comments
+        if comment_depth > 0:
+            for j in range(len(lines[i]) - 1):
+                if lines[i][j:j+2] == '(*':
+                    comment_depth += 1
+                elif lines[i][j:j+2] == '*)':
+                    comment_depth -= 1
+            i += 1
+            continue
+
+        # Track comment opens on this line
+        line_depth = 0
+        for j in range(len(lines[i]) - 1):
+            if lines[i][j:j+2] == '(*':
+                line_depth += 1
+            elif lines[i][j:j+2] == '*)':
+                line_depth -= 1
+        if line_depth > 0:
+            comment_depth = line_depth
+            i += 1
+            continue
 
         # Match theorem/lemma declaration with a name
         m = re.match(r'^(THEOREM|LEMMA|COROLLARY|PROPOSITION)\s+(\w+)\s*==', line)
@@ -243,9 +321,22 @@ def parse_theorems(lines):
 
         if proof_start is None:
             j = i + 1
+            inner_comment_depth = 0
             while j < len(lines):
                 sline = lines[j].strip()
                 orig = lines[j]
+
+                # Track comment depth
+                line_cd = 0
+                for ci in range(len(orig) - 1):
+                    if orig[ci:ci+2] == '(*':
+                        line_cd += 1
+                    elif orig[ci:ci+2] == '*)':
+                        line_cd -= 1
+                inner_comment_depth += line_cd
+                if inner_comment_depth > 0:
+                    j += 1
+                    continue
 
                 # End of module
                 if re.match(r'^={3,}', sline):
@@ -261,7 +352,10 @@ def parse_theorems(lines):
 
                 # Top-level definitions (not indented, at column 0)
                 if orig and not orig[0].isspace():
-                    if re.match(r'^[A-Z]\w*(\(.*?\))?\s*==\s', sline) and not re.match(r'^<\d+>', sline):
+                    if re.match(r'^[A-Z]\w*(\(.*?\))?\s*==(\s|$)', sline) and not re.match(r'^<\d+>', sline):
+                        break
+                    # Definitions starting with digits (e.g., 1bOr2bMsgs ==)
+                    if re.match(r'^\d\w*\s*==(\s|$)', sline) and not re.match(r'^<\d+>', sline):
                         break
                     if re.match(r'^(CONSTANT|CONSTANTS|VARIABLE|VARIABLES)\s', sline):
                         break
@@ -385,14 +479,7 @@ def merge_files(files_by_module, dep_graph, target_module):
         for line in body:
             if re.match(r'^EXTENDS\s', line.strip()):
                 continue
-            # Remove INSTANCE lines that reference local modules we're merging
-            inst_match = re.match(r'^(\w+)\s*==\s*INSTANCE\s+(\w+)', line.strip())
-            if inst_match and inst_match.group(2) in all_deps:
-                continue
-            if re.match(r'^INSTANCE\s+(\w+)', line.strip()):
-                imod = re.match(r'^INSTANCE\s+(\w+)', line.strip()).group(1)
-                if imod in all_deps:
-                    continue
+            # Remove EXTENDS-based local module references only (not INSTANCE)
             filtered_body.append(line)
 
         if mod != target_module:
@@ -412,6 +499,48 @@ def merge_files(files_by_module, dep_graph, target_module):
 
     result_lines = header_lines + merged_body_lines + ['=' * 40]
     return [l + '\n' for l in result_lines], target_module
+
+
+def strip_all_proofs(lines, theorems):
+    """Strip all proofs from a file, replacing them with PROOF OMITTED.
+
+    Used for dependency files that are copied alongside benchmarks.
+    """
+    result = []
+    i = 0
+    while i < len(lines):
+        found_thm = None
+        for idx, thm in enumerate(theorems):
+            if i == thm.statement_start:
+                found_thm = idx
+                break
+
+        if found_thm is not None:
+            thm = theorems[found_thm]
+            stmt_lines = get_theorem_statement_lines(lines, thm)
+            result.extend(stmt_lines)
+            result.append('  PROOF OMITTED')
+            result.append('')
+            end = thm.proof_end if thm.proof_end is not None else thm.statement_end
+            i = end + 1
+            continue
+
+        # Check if inside a theorem range
+        inside = False
+        for thm in theorems:
+            start = thm.statement_start
+            end = thm.proof_end if thm.proof_end is not None else thm.statement_end
+            if start < i <= end:
+                inside = True
+                break
+        if inside:
+            i += 1
+            continue
+
+        result.append(lines[i])
+        i += 1
+
+    return '\n'.join(result)
 
 
 def generate_benchmark_file(lines_or_content, theorems, target_idx, module_name, benchmark_name):
@@ -501,6 +630,20 @@ def generate_benchmark_file(lines_or_content, theorems, target_idx, module_name,
     if not any(re.match(r'^={3,}', l.strip()) for l in result[-3:] if l.strip()):
         result.append('=' * 40)
 
+    # Fix unclosed comments: count (* and *) and close any open ones
+    depth = 0
+    for line in result:
+        for j in range(len(line) - 1):
+            if line[j:j+2] == '(*':
+                depth += 1
+            elif line[j:j+2] == '*)':
+                depth -= 1
+    # Insert closing comments before the ==== line
+    if depth > 0:
+        eq_idx = next((i for i in range(len(result)-1, -1, -1) if re.match(r'^={3,}', result[i].strip())), len(result))
+        for _ in range(depth):
+            result.insert(eq_idx, '*)')
+
     # Replace module name in header
     final = []
     for line in result:
@@ -532,9 +675,8 @@ def process_module_dir(module_dir_name):
 
     # Build dependency graph
     dep_graph = build_dependency_graph(files_by_module)
+    available = set(files_by_module.keys())
 
-    # For each file, determine if it needs merging
-    # A file needs merging if it has local dependencies
     benchmark_count = 0
     out_dir = os.path.join(BENCHMARK_DIR, module_dir_name)
 
@@ -548,14 +690,57 @@ def process_module_dir(module_dir_name):
         if not theorems:
             continue
 
-        # Check if this module has local dependencies
-        local_deps = find_all_deps(mod_name, dep_graph)
+        # Determine dependency handling strategy:
+        # - EXTENDS local deps: merge into the benchmark file
+        # - INSTANCE local deps: copy as separate files alongside benchmark
+        extends_deps = get_extends_dependencies(content, available)
+        instance_deps = get_instance_dependencies(content, available)
 
-        if local_deps:
-            # Merge all dependencies into single content
-            merged_lines, _ = merge_files(files_by_module, dep_graph, mod_name)
+        # For EXTENDS deps, also get their transitive EXTENDS deps (for merging)
+        all_extends_deps = set()
+        for ed in extends_deps:
+            all_extends_deps.add(ed)
+            # Get transitive EXTENDS-only deps
+            ed_filepath = files_by_module.get(ed)
+            if ed_filepath:
+                with open(ed_filepath, 'r') as f:
+                    ed_content = f.read()
+                all_extends_deps |= get_extends_dependencies(ed_content, available)
+
+        # For INSTANCE deps, collect all files that need to be copied
+        # (the INSTANCE'd module + all its transitive deps)
+        # Include INSTANCE deps from both the main module AND merged EXTENDS deps
+        files_to_copy = set()
+        for inst_mod in instance_deps:
+            files_to_copy.add(inst_mod)
+            get_all_file_deps(inst_mod, files_by_module, files_to_copy)
+        # Also get INSTANCE deps from EXTENDS deps (they're merged into the benchmark)
+        for ed in all_extends_deps:
+            ed_filepath = files_by_module.get(ed)
+            if ed_filepath:
+                with open(ed_filepath, 'r') as f:
+                    ed_content = f.read()
+                for _, inst_mod in parse_instances(ed_content):
+                    if inst_mod in available and inst_mod not in all_extends_deps:
+                        files_to_copy.add(inst_mod)
+                        get_all_file_deps(inst_mod, files_by_module, files_to_copy)
+        # Remove any extends deps from files_to_copy (they'll be merged)
+        files_to_copy -= all_extends_deps
+
+        # Merge only EXTENDS dependencies
+        if all_extends_deps:
+            # Build a restricted dep graph for EXTENDS-only merging
+            extends_graph = {}
+            for ed in all_extends_deps:
+                ed_filepath = files_by_module.get(ed)
+                if ed_filepath:
+                    with open(ed_filepath, 'r') as f:
+                        ed_content = f.read()
+                    extends_graph[ed] = get_extends_dependencies(ed_content, available) & all_extends_deps
+            extends_graph[mod_name] = all_extends_deps
+
+            merged_lines, _ = merge_files(files_by_module, extends_graph, mod_name)
             work_lines = [l.rstrip('\n') for l in merged_lines]
-            # Re-parse theorems from merged content
             theorems = parse_theorems(work_lines)
             if not theorems:
                 continue
@@ -583,6 +768,29 @@ def process_module_dir(module_dir_name):
 
             with open(benchmark_file, 'w') as f:
                 f.write(content)
+
+            # Copy INSTANCE dependency files alongside the benchmark
+            # Strip all proofs from copied files (replace with PROOF OMITTED)
+            # to avoid leaking proof information
+            for dep_mod in files_to_copy:
+                dep_filepath = files_by_module.get(dep_mod)
+                if dep_filepath:
+                    dest = os.path.join(out_dir, os.path.basename(dep_filepath))
+                    if not os.path.exists(dest):
+                        # Read, strip proofs, write
+                        with open(dep_filepath, 'r') as df:
+                            dep_content = df.read()
+                        dep_lines = dep_content.split('\n')
+                        dep_theorems = parse_theorems(dep_lines)
+                        if dep_theorems:
+                            # Use generate_benchmark_file logic but admit ALL theorems
+                            stripped = strip_all_proofs(dep_lines, dep_theorems)
+                            with open(dest, 'w') as df:
+                                df.write(stripped)
+                        else:
+                            # No theorems, just copy as-is
+                            import shutil
+                            shutil.copy2(dep_filepath, dest)
 
             benchmark_count += 1
             print(f'  Generated: {os.path.relpath(benchmark_file, SOURCE_ROOT)}')

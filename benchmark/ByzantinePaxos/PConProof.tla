@@ -1,4 +1,4 @@
----------------------------- MODULE PConProof_NextDef -------------------------------
+---------------------------- MODULE PConProof -------------------------------
 (***************************************************************************)
 (* This is a specification of a variant of the classic Paxos consensus     *)
 (* algorithm described in                                                  *)
@@ -422,6 +422,107 @@ TLANext ==
 (* next-state relation TLANext.                                            *)
 (***************************************************************************)
 THEOREM NextDef == (Next <=> TLANext) 
-PROOF OBVIOUS
+  PROOF OMITTED
 
+-----------------------------------------------------------------------------
+(***************************************************************************)
+(* The type invariant.                                                     *)
+(***************************************************************************)
+TypeOK == /\ maxBal  \in [Acceptor -> Ballot \cup {-1}]
+          /\ maxVBal \in [Acceptor -> Ballot \cup {-1}]
+          /\ maxVVal \in [Acceptor -> Value \cup {None}]
+          /\ msgs \subseteq Message    
+
+(***************************************************************************)
+(* Here is the definition of the state-function `chosen' that implements   *)
+(* the state-function of the same name in the voting algorithm.            *)
+(***************************************************************************)
+chosen == {v \in Value : \E Q \in Quorum, b \in Ballot :
+                           \A a \in Q : \E m \in msgs : /\ m.type = "2b"
+                                                        /\ m.acc  = a
+                                                        /\ m.bal  = b
+                                                        /\ m.val  = v} 
+----------------------------------------------------------------------------
+(***************************************************************************)
+(* We now define the refinement mapping under which this algorithm         *)
+(* implements the specification in module Voting.                          *)
+(***************************************************************************)
+
+(***************************************************************************)
+(* As we observed, votes are registered by sending phase 2b messages.  So  *)
+(* the array `votes' describing the votes cast by the acceptors is defined *)
+(* as follows.                                                             *)
+(***************************************************************************)
+votes == [a \in Acceptor |->  
+           {<<m.bal, m.val>> : m \in {mm \in msgs: /\ mm.type = "2b"
+                                                   /\ mm.acc = a }}]
+                                                   
+(***************************************************************************)
+(* We now instantiate module Voting, substituting:                         *)
+(*                                                                         *)
+(*  - The constants Value, Acceptor, and Quorum declared in this module    *)
+(*    for the corresponding constants of that module Voting.               *)
+(*                                                                         *)
+(*  - The variable maxBal and the defined state function `votes' for the   *)
+(*    correspondingly-named variables of module Voting.                    *)
+(***************************************************************************)
+V == INSTANCE VoteProof 
+
+-----------------------------------------------------------------------------
+(***************************************************************************)
+(* We now define PInv to be what I believe to be an inductive invariant    *)
+(* and assert the theorems for proving that this algorithm implements the  *)
+(* voting algorithm under the refinement mapping specified by the INSTANCE *)
+(* statement.  Whether PInv really is an inductive invariant will be       *)
+(* determined only by a rigorous proof.                                    *)
+(***************************************************************************)
+PAccInv == \A a \in Acceptor : 
+             /\ maxBal[a] >= maxVBal[a]
+             /\ \A b \in (maxVBal[a]+1)..(maxBal[a]-1) : V!DidNotVoteIn(a,b)
+             /\ (maxVBal[a] # -1) => V!VotedFor(a, maxVBal[a], maxVVal[a])
+             
+P1bInv == \A m \in msgs :
+             (m.type = "1b") => 
+               /\ (maxBal[m.acc] >= m.bal) /\ (m.bal > m.mbal)
+               /\ \A b \in (m.mbal+1)..(m.bal-1) : V!DidNotVoteIn(m.acc,b)
+
+P1cInv ==  \A m \in msgs : (m.type = "1c") => V!SafeAt(m.bal, m.val)
+
+P2aInv == \A m \in msgs : 
+            (m.type = "2a") => \E m1c \in msgs : /\ m1c.type = "1c"
+                                                 /\ m1c.bal = m.bal 
+                                                 /\ m1c.val = m.val
+(***************************************************************************)
+(* The following theorem is interesting in its own right.  It essentially  *)
+(* asserts the correctness of the definition of ShowsSafeAt.               *)
+(***************************************************************************)
+THEOREM PT1 == TypeOK /\ P1bInv /\ P1cInv =>
+                 \A Q \in Quorum, b \in Ballot, v \in Value :
+                     ShowsSafeAt(Q, b, v) => V!SafeAt(b, v) 
+
+PInv == TypeOK /\ PAccInv /\ P1bInv /\ P1cInv /\ P2aInv  
+
+THEOREM Invariance == Spec => []PInv
+
+THEOREM Implementation == Spec => V!Spec
+
+(***************************************************************************)
+(* The following result shows that our definition of `chosen' is the       *)
+(* correct one, because it implements the state-function `chosen' of the   *)
+(* voting algorithm.                                                       *)
+(***************************************************************************)
+THEOREM Spec => [](chosen = V!chosen)
+
+(***************************************************************************)
+(* The four theorems above have been checked by TLC for a model with 3     *)
+(* acceptors, 2 values, and 3 ballot numbers.  Theorem PT1 was checked as  *)
+(* an invariant, therefore checking only that it is true for all reachable *)
+(* states.  This model is large enough that it would most likely have      *)
+(* revealed any "coding" errors in the algorithm.  We believe that the     *)
+(* algorithm is well-enough understood that it is unlikely to contain any  *)
+(* fundamental errors.                                                     *)
+(***************************************************************************)
 =============================================================================
+\* Modification History
+\* Last modified Sat Nov 16 22:19:39 CST 2019 by hengxin
+\* Last modified Tue Feb 08 12:09:41 PST 2011 by lamport

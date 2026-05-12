@@ -1,4 +1,4 @@
-------------------------------- MODULE Voting_Consistent -------------------------------
+------------------------------- MODULE Voting -------------------------------
 EXTENDS FiniteSets, TLAPS, Integers
 -----------------------------------------------------------------------------
 CONSTANT Value, Acceptor, Quorum
@@ -117,6 +117,12 @@ THEOREM Invariant == Spec => []Inv
 
 ----------------------------------------------------------------------------
 THEOREM Consistent == Spec => []Consistency
-PROOF OBVIOUS
+  PROOF OMITTED
+
+----------------------------------------------------------------------------
+C == INSTANCE Consensus \* WITH chosen <- chosen
+
+THEOREM Refinement == Spec => C!Spec
+  PROOF OMITTED
 
 =============================================================================
