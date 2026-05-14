@@ -273,3 +273,7 @@ check_proof.build/
 check_proof.dist/
 check_proof_bin
 results_codex_intermediate/
+*.pdf
+*.tlaps/
+*.toolbox/
+*.thy
