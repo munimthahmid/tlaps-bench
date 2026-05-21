@@ -40,8 +40,8 @@ echo "[entrypoint] Firewall configured: only API endpoints allowed, all other tr
 
 # Lock down tlapm library with immutable flag (requires --cap-add LINUX_IMMUTABLE)
 echo "[entrypoint] Locking tlapm library (chattr +i)..."
-find /opt/tlapm15 -type f -exec chattr +i {} + 2>/dev/null
-find /opt/tlapm15 -type d -exec chattr +i {} + 2>/dev/null
+find /opt/tlapm -type f -exec chattr +i {} + 2>/dev/null
+find /opt/tlapm -type d -exec chattr +i {} + 2>/dev/null
 echo "[entrypoint] tlapm library locked"
 
 # Fix bench user UID/GID to match host (avoids permission issues on mounted volumes)

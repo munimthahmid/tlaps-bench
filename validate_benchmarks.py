@@ -72,6 +72,19 @@ class ValidationResult:
         return "FAIL"
 
 
+def _derive_tlapm_lib(tlapm_path: str) -> Optional[str]:
+    """Pick the stdlib dir based on tlapm install layout.
+
+    tlapm 1.6 stores .tla files at lib/tlapm/stdlib; tlapm 1.5 at lib/tlaps.
+    """
+    base = os.path.dirname(os.path.dirname(tlapm_path))
+    for sub in ['lib/tlapm/stdlib', 'lib/tlaps', 'lib/tlapm', 'lib']:
+        cand = os.path.join(base, sub)
+        if os.path.isdir(cand):
+            return cand
+    return None
+
+
 def find_original_proof(source_files_by_module: Dict, theorem_name: str,
                         source_basename: str) -> Optional[Tuple[str, List[str], int, int]]:
     """Find the original proof for a theorem from source files.
@@ -419,7 +432,13 @@ def main():
     tlapm_path = args.tlapm
     if not tlapm_path:
         # Try common locations
-        for candidate in ['/tmp/tlapm/bin/tlapm', shutil.which('tlapm')]:
+        candidates = [
+            '/opt/tlapm/bin/tlapm',
+            os.path.expanduser('~/.tlapm/bin/tlapm'),
+            '/tmp/tlapm/bin/tlapm',
+            shutil.which('tlapm'),
+        ]
+        for candidate in candidates:
             if candidate and os.path.isfile(candidate):
                 tlapm_path = candidate
                 break
@@ -427,12 +446,9 @@ def main():
         print("ERROR: tlapm not found. Use --tlapm to specify path.")
         sys.exit(1)
 
-    tlapm_lib = args.tlapm_lib
-    if not tlapm_lib:
-        # Derive from tlapm_path
-        tlapm_lib = os.path.join(os.path.dirname(os.path.dirname(tlapm_path)), 'lib')
-    if not os.path.isdir(tlapm_lib):
-        print(f"ERROR: tlapm lib not found at {tlapm_lib}. Use --tlapm-lib to specify.")
+    tlapm_lib = args.tlapm_lib or _derive_tlapm_lib(tlapm_path)
+    if not tlapm_lib or not os.path.isdir(tlapm_lib):
+        print(f"ERROR: tlapm lib not found near {tlapm_path}. Use --tlapm-lib to specify.")
         sys.exit(1)
 
     print(f"Using tlapm: {tlapm_path}")
@@ -499,8 +515,7 @@ def main():
     rerun_tlapm = args.rerun_tlapm or tlapm_path
     rerun_tlapm_lib = args.rerun_tlapm_lib
     if not rerun_tlapm_lib and args.rerun_tlapm:
-        # Derive lib from rerun tlapm path
-        rerun_tlapm_lib = os.path.join(os.path.dirname(os.path.dirname(rerun_tlapm)), 'lib')
+        rerun_tlapm_lib = _derive_tlapm_lib(rerun_tlapm)
     if not rerun_tlapm_lib:
         rerun_tlapm_lib = tlapm_lib
 

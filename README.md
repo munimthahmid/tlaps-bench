@@ -94,7 +94,7 @@ python3 run_codex_benchmark.py --filter GCD_GCD3
 python3 run_codex_benchmark.py --jobs 40 --timeout 7200
 ```
 
-Requires: [OpenAI Codex CLI](https://github.com/openai/codex) installed, tlapm 1.5 at `~/.tlapm15/` or `/tmp/tlapm15/`.
+Requires: [OpenAI Codex CLI](https://github.com/openai/codex) installed, tlapm 1.6 pre-release at `~/.tlapm/` or `/tmp/tlapm/`.
 
 ### Run with Docker (recommended)
 
@@ -104,18 +104,18 @@ cd docker && bash build.sh
 docker-compose run bench python3 /run_codex_benchmark.py --jobs 40
 ```
 
-Docker blocks access to GitHub/TLA+ sites and removes tlapm's bundled examples directory to prevent data leakage.
+Docker blocks access to GitHub/TLA+ sites to prevent data leakage.
 
 ### Validate benchmarks
 
 Verify that the source proofs (before `PROOF OBVIOUS` replacement) are valid:
 
 ```bash
-# Validate all benchmarks with tlapm 1.5
+# Validate all benchmarks (uses tlapm 1.6 pre-release by default)
 python3 validate_benchmarks.py --jobs 40
 
-# Validate with tlapm 1.6 rerun for failures
-python3 validate_benchmarks.py --jobs 40 --rerun --rerun-tlapm /path/to/tlapm16
+# Validate with an alternative tlapm (e.g. 1.5) as a rerun for failures
+python3 validate_benchmarks.py --jobs 40 --rerun --rerun-tlapm /path/to/tlapm15
 
 # Filter specific benchmarks
 python3 validate_benchmarks.py --filter Paxos --jobs 10

@@ -18,18 +18,19 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # Install codex CLI
 RUN npm install -g @openai/codex && npm cache clean --force
 
-# Install tlapm 1.5 from official release, remove examples
-RUN curl -fsSL -o /tmp/tlaps.bin \
-    https://github.com/tlaplus/tlapm/releases/download/202210041448/tlaps-1.5.0-x86_64-linux-gnu-inst.bin \
-    && chmod +x /tmp/tlaps.bin \
-    && /tmp/tlaps.bin -d /opt/tlapm15 \
-    && rm /tmp/tlaps.bin \
-    && rm -rf /opt/tlapm15/lib/tlaps/examples
+# Install tlapm 1.6 pre-release (rolling, last refreshed upstream 2026-04-14).
+# Tarball top-level dir is `tlapm/`, so extracting into /opt/ produces /opt/tlapm/.
+# Drop tlapm_lsp (~40MB language server) — not needed for batch verification.
+RUN curl -fsSL -o /tmp/tlapm.tar.gz \
+    https://github.com/tlaplus/tlapm/releases/download/1.6.0-pre/tlapm-1.6.0-pre-x86_64-linux-gnu.tar.gz \
+    && tar -xzf /tmp/tlapm.tar.gz -C /opt/ \
+    && rm /tmp/tlapm.tar.gz \
+    && rm -f /opt/tlapm/bin/tlapm_lsp
 
 # Lock down tlapm: prevent AI from tampering with library files
 # Remove write permission — bench user cannot restore (not owner, no sudo)
 # chattr +i is applied at container start in entrypoint.sh (needs CAP_LINUX_IMMUTABLE)
-RUN chmod -R a-w /opt/tlapm15
+RUN chmod -R a-w /opt/tlapm
 
 # Remove sudo
 RUN apt-get purge -y sudo 2>/dev/null; rm -f /usr/bin/sudo /usr/sbin/sudo; true

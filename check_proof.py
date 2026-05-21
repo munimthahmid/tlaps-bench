@@ -38,16 +38,27 @@ from cheating_detection import (
 
 def find_tlapm():
     """Find tlapm binary."""
-    for candidate in ['/opt/tlapm15/bin/tlapm', '/tmp/tlapm15/bin/tlapm', '/tmp/tlapm/bin/tlapm', shutil.which('tlapm')]:
+    candidates = [
+        '/opt/tlapm/bin/tlapm',
+        os.path.expanduser('~/.tlapm/bin/tlapm'),
+        '/tmp/tlapm/bin/tlapm',
+        shutil.which('tlapm'),
+    ]
+    for candidate in candidates:
         if candidate and os.path.isfile(candidate):
             return candidate
     return None
 
 
 def find_tlapm_lib(tlapm_path):
-    """Derive lib path from tlapm binary path."""
+    """Derive lib path from tlapm binary path.
+
+    tlapm 1.6 puts stdlib at lib/tlapm/stdlib; tlapm 1.5 used lib/tlaps.
+    The 1.6 sub is checked first because lib/tlapm exists in 1.6 too but
+    does NOT directly contain the .tla files.
+    """
     base = os.path.dirname(os.path.dirname(tlapm_path))
-    for sub in ['lib/tlaps', 'lib/tlapm', 'lib']:
+    for sub in ['lib/tlapm/stdlib', 'lib/tlaps', 'lib/tlapm', 'lib']:
         path = os.path.join(base, sub)
         if os.path.isdir(path):
             return path

@@ -98,11 +98,11 @@ These are anti-patterns that cannot be caught by static analysis of the proof fi
 
 ### 9. Reading tlapm's bundled examples
 
-**Method**: tlapm 1.5 ships with an `examples/` directory containing complete, verified proofs for many of the same theorems in the benchmark. The AI can simply read these files and copy the proofs.
+**Method**: tlapm 1.5 shipped with an `examples/` directory containing complete, verified proofs for many of the same theorems in the benchmark. The AI could simply read these files and copy the proofs.
 
 **Impact**: In an early (non-Docker) run, Codex accessed tlapm's examples directory in **105 out of 190 runs**. This was essentially open-book copying.
 
-**Countermeasure**: The Docker build script (`docker/build.sh`) deletes the `examples/` directory from the tlapm installation before building the container image.
+**Countermeasure**: The Docker image used to delete the `examples/` directory from the tlapm 1.5 installation before publishing. tlapm 1.6 no longer ships an `examples/` directory at all, so the in-Dockerfile cleanup is dropped. The standard-library proof files (`lib/tlapm/stdlib/*_proofs.tla`) bundled with 1.6 cover stdlib theorems only and do not overlap with benchmark targets.
 
 ### 10. Web search for proofs
 
@@ -119,9 +119,9 @@ Only API endpoints (e.g., `api.openai.com`, Azure OpenAI) are whitelisted via ip
 
 ### 11. Modifying tlapm's standard library
 
-**Method**: Modify files in tlapm's `lib/tlaps/` directory (e.g., `TLAPS.tla`, `NaturalsInduction.tla`) to add axioms or weaken proof obligations.
+**Method**: Modify files in tlapm's stdlib directory (e.g., `TLAPS.tla`, `NaturalsInduction.tla`) to add axioms or weaken proof obligations. In tlapm 1.6 the stdlib lives at `lib/tlapm/stdlib/`; in 1.5 it was `lib/tlaps/`.
 
-**Countermeasure**: tlapm is installed at `/opt/tlapm15/` owned by root. The benchmark runs as unprivileged user `bench` with no sudo access. File permissions prevent modification.
+**Countermeasure**: tlapm is installed at `/opt/tlapm/` owned by root. The benchmark runs as unprivileged user `bench` with no sudo access. File permissions prevent modification, and the entrypoint additionally sets `chattr +i` on every file/dir under `/opt/tlapm/`.
 
 ### 12. Reading the anti-pattern detection script
 
@@ -223,6 +223,6 @@ This case demonstrates that AI systems will actively probe and reverse-engineer 
 
 1. **Sanitize error messages**: The checker should not reveal what specific checks are being performed. Generic "anti-pattern detected" is sufficient.
 
-2. **Consider tlapm 1.6**: Some benchmarks (e.g., PaxosHistVar_Invariant) only work on tlapm 1.6. Using 1.6 would expand the set of solvable benchmarks but requires verifying all benchmarks.
+2. **Use tlapm 1.6**: Some benchmarks (e.g., PaxosHistVar_Invariant) only work on tlapm 1.6. The Docker image now installs the 1.6 pre-release.
 
 3. **Adversarial testing**: Periodically run the benchmark with new AI models and update this document with any new anti-patterns discovered.

@@ -38,9 +38,9 @@ else:
     BENCHMARK_DIR = os.path.join(SCRIPT_DIR, 'benchmark')
 CHECK_PROOF_SCRIPT = os.path.join(SCRIPT_DIR, 'check_proof_bin')
 
-# Persistent tlapm location — use /opt/tlapm15 in docker, ~/.tlapm15 on host
-TLAPM_PERSISTENT = '/opt/tlapm15' if os.path.isdir('/opt/tlapm15') else os.path.expanduser('~/.tlapm15')
-TLAPM_SOURCE = '/tmp/tlapm15'
+# Persistent tlapm location — use /opt/tlapm in docker, ~/.tlapm on host
+TLAPM_PERSISTENT = '/opt/tlapm' if os.path.isdir('/opt/tlapm') else os.path.expanduser('~/.tlapm')
+TLAPM_SOURCE = '/tmp/tlapm'
 
 
 def ensure_tlapm():
@@ -48,7 +48,7 @@ def ensure_tlapm():
     if os.path.isfile(os.path.join(TLAPM_PERSISTENT, 'bin', 'tlapm')):
         print(f"tlapm at {TLAPM_PERSISTENT}")
         return
-    # Try copying from /tmp/tlapm15 (host-only fallback)
+    # Try copying from /tmp/tlapm (host-only fallback)
     if not os.path.isdir(TLAPM_SOURCE):
         print(f"ERROR: tlapm not found at {TLAPM_PERSISTENT} or {TLAPM_SOURCE}")
         sys.exit(1)
@@ -205,7 +205,7 @@ def build_prompt(benchmark_basename):
     name_no_ext = os.path.splitext(benchmark_basename)[0]
     tlapm_path = TLAPM_PERSISTENT
     return f"""\
-The file {benchmark_basename} contains a TLA+ theorem that cannot be verified by tlapm (the TLA+ Proof System) yet. The last theorem in the file has `PROOF OBVIOUS` as a placeholder proof that will fail. Preceding theorems have `PROOF OMITTED` which means they are admitted and available as lemmas. Please replace `PROOF OBVIOUS` with a complete, valid TLAPS proof so that tlapm can successfully verify it. The tlapm standard library is at {tlapm_path}/lib/tlaps — you may read and reference the modules there, but do not modify any files under {tlapm_path}/. You can run tlapm directly: `{tlapm_path}/bin/tlapm -I {tlapm_path}/lib/tlaps {benchmark_basename}`. Keep editing your proof until tlapm shows no errors — do not give up or stop early. If a proof attempt fails, try a different strategy. Keep iterating until `./check_proof_bin {benchmark_basename}` reports PASS. You should not change any module header, operator definitions, CONSTANT or VARIABLE declarations, ASSUME/ASSUMPTION declarations, or THEOREM/LEMMA statements that appear above `PROOF OBVIOUS`; you should not change any preceding `PROOF OMITTED` proofs. You should never use `PROOF OMITTED` or bare `OMITTED` in your proof. You are not allowed to introduce new top-level AXIOM, ASSUME, ASSUMPTION, CONSTANT, or VARIABLE declarations, or weaken theorem statements or add extra hypotheses. Before you are done, run `./check_proof_bin {benchmark_basename}` to verify you have not made any illegal changes. Do not browse or fetch any external websites — network access is disabled. Do not look for example proof files or solutions outside the current working directory. Write the proof based on your own knowledge of TLA+ and TLAPS.\
+The file {benchmark_basename} contains a TLA+ theorem that cannot be verified by tlapm (the TLA+ Proof System) yet. The last theorem in the file has `PROOF OBVIOUS` as a placeholder proof that will fail. Preceding theorems have `PROOF OMITTED` which means they are admitted and available as lemmas. Please replace `PROOF OBVIOUS` with a complete, valid TLAPS proof so that tlapm can successfully verify it. The tlapm standard library is at {tlapm_path}/lib/tlapm/stdlib — you may read and reference the modules there, but do not modify any files under {tlapm_path}/. You can run tlapm directly: `{tlapm_path}/bin/tlapm -I {tlapm_path}/lib/tlapm/stdlib {benchmark_basename}`. Keep editing your proof until tlapm shows no errors — do not give up or stop early. If a proof attempt fails, try a different strategy. Keep iterating until `./check_proof_bin {benchmark_basename}` reports PASS. You should not change any module header, operator definitions, CONSTANT or VARIABLE declarations, ASSUME/ASSUMPTION declarations, or THEOREM/LEMMA statements that appear above `PROOF OBVIOUS`; you should not change any preceding `PROOF OMITTED` proofs. You should never use `PROOF OMITTED` or bare `OMITTED` in your proof. You are not allowed to introduce new top-level AXIOM, ASSUME, ASSUMPTION, CONSTANT, or VARIABLE declarations, or weaken theorem statements or add extra hypotheses. Before you are done, run `./check_proof_bin {benchmark_basename}` to verify you have not made any illegal changes. Do not browse or fetch any external websites — network access is disabled. Do not look for example proof files or solutions outside the current working directory. Write the proof based on your own knowledge of TLA+ and TLAPS.\
 """
 
 
