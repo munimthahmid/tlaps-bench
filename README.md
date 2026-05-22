@@ -78,19 +78,21 @@ Full results are in `results/codex/20260513_093531/`, with per-benchmark directo
 
 ```
 src/
-  level1/generate.py         Level 1 generator (proof-completion benchmarks)
-  level2/                    Level 2 generator (proof-from-scratch — WIP)
-  common/check_proof.py      Single-proof checker + cheating detection
-  common/validate.py         Batch-validate source proofs with tlapm
+  dataset/level1/generate.py   Level 1 generator (proof-completion benchmarks)
+  dataset/level2/generate.py   Level 2 generator (proof-from-scratch)
+  dataset/level2/design.md     Design doc for the L2 generator
+  dataset/sany-dump/           Java SANY semantic dumper (used by L2 generator)
+  common/check_proof.py        Single-proof checker + cheating detection
+  common/validate.py           Batch-validate source proofs with tlapm
   common/cheating_detection.py
-  evaluator/runner.py        AI-agent runner (currently Codex CLI)
-  evaluator/prompts/         Prompt templates per level
-scripts/                     Install + convenience wrappers
-benchmark/level1/            Generated L1 benchmarks (193 files)
-benchmark/level2/            Generated L2 benchmarks (TBD)
-source/                      Original TLA+ specs used as input
-lib/                         Vendored: tla2tools.jar (gitignored)
-docker/                      Container build + isolation
+  evaluator/runner.py          AI-agent runner (currently Codex CLI)
+  evaluator/prompts/           Prompt templates per level
+scripts/                       Install + convenience wrappers
+benchmark/level1/              Generated L1 benchmarks (193 files)
+benchmark/level2/              Generated L2 benchmarks
+source/                        Original TLA+ specs used as input
+lib/                           Vendored: tla2tools.jar (gitignored)
+docker/                        Container build + isolation
 ```
 
 ### Run Codex benchmark
@@ -141,7 +143,7 @@ Exit codes: `0` = PASS, `1` = FAIL, `2` = CHEATING, `3` = ERROR.
 ### Generate Level 1 benchmarks from source
 
 ```bash
-python3 src/level1/generate.py
+python3 src/dataset/level1/generate.py
 ```
 
 Extracts each theorem with a real proof, replaces the last proof with `PROOF OBVIOUS`, and writes one benchmark file per theorem to `benchmark/level1/`.
