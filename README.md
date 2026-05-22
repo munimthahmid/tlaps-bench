@@ -16,7 +16,7 @@ Each benchmark file contains:
 - **One target theorem** with `PROOF OBVIOUS` (to be replaced with a real proof)
 
 ```
-benchmark/
+benchmark/level1/
   Allocator/          # 10 tasks
   AtomicBakery/       # 8 tasks
   BubbleSort/         # 8 tasks
@@ -74,24 +74,33 @@ Four benchmarks triggered anti-pattern detection — all are interesting case st
 
 Full results are in `results/codex/20260513_093531/`, with per-benchmark directories containing `benchmark.tla`, `solution.tla`, `codex_output.jsonl`, `transcript.txt`, and `check.result`.
 
-## Scripts
+## Repo layout
 
-| Script | Purpose |
-|--------|---------|
-| `run_codex_benchmark.py` | Run Codex (or any codex-compatible agent) on benchmarks |
-| `validate_benchmarks.py` | Validate benchmark source proofs with tlapm |
-| `check_proof.py` | Check a single proof attempt for correctness and cheating |
-| `generate_benchmarks.py` | Generate benchmark files from source proofs (replaces last proof with `PROOF OBVIOUS`) |
-| `cheating_detection.py` | Shared cheating detection logic (used by `check_proof.py` and `validate_benchmarks.py`) |
+```
+src/
+  level1/generate.py         Level 1 generator (proof-completion benchmarks)
+  level2/                    Level 2 generator (proof-from-scratch — WIP)
+  common/check_proof.py      Single-proof checker + cheating detection
+  common/validate.py         Batch-validate source proofs with tlapm
+  common/cheating_detection.py
+  evaluator/runner.py        AI-agent runner (currently Codex CLI)
+  evaluator/prompts/         Prompt templates per level
+scripts/                     Install + convenience wrappers
+benchmark/level1/            Generated L1 benchmarks (193 files)
+benchmark/level2/            Generated L2 benchmarks (TBD)
+source/                      Original TLA+ specs used as input
+lib/                         Vendored: tla2tools.jar (gitignored)
+docker/                      Container build + isolation
+```
 
 ### Run Codex benchmark
 
 ```bash
 # Single benchmark
-python3 run_codex_benchmark.py --filter GCD_GCD3
+python3 src/evaluator/runner.py --filter GCD_GCD3
 
 # Full run (40 parallel, 2h timeout)
-python3 run_codex_benchmark.py --jobs 40 --timeout 7200
+python3 src/evaluator/runner.py --jobs 40 --timeout 7200
 ```
 
 Requires: [OpenAI Codex CLI](https://github.com/openai/codex) installed, tlapm 1.6 pre-release at `~/.tlapm/` or `/tmp/tlapm/`.
@@ -101,7 +110,7 @@ Requires: [OpenAI Codex CLI](https://github.com/openai/codex) installed, tlapm 1
 ```bash
 cd docker && bash build.sh
 # Set OPENAI_API_KEY or AZURE_OPENAI_API_KEY + AZURE_OPENAI_HOST
-docker-compose run bench python3 /run_codex_benchmark.py --jobs 40
+docker-compose run bench python3 /scripts/runner.py --jobs 40
 ```
 
 Docker blocks access to GitHub/TLA+ sites to prevent data leakage.
@@ -112,30 +121,30 @@ Verify that the source proofs (before `PROOF OBVIOUS` replacement) are valid:
 
 ```bash
 # Validate all benchmarks (uses tlapm 1.6 pre-release by default)
-python3 validate_benchmarks.py --jobs 40
+python3 src/common/validate.py --jobs 40
 
 # Validate with an alternative tlapm (e.g. 1.5) as a rerun for failures
-python3 validate_benchmarks.py --jobs 40 --rerun --rerun-tlapm /path/to/tlapm15
+python3 src/common/validate.py --jobs 40 --rerun --rerun-tlapm /path/to/tlapm15
 
 # Filter specific benchmarks
-python3 validate_benchmarks.py --filter Paxos --jobs 10
+python3 src/common/validate.py --filter Paxos --jobs 10
 ```
 
 ### Check a single proof
 
 ```bash
-python3 check_proof.py benchmark/Euclid/GCD_GCD3.tla [--tlapm PATH] [--timeout SECS]
+python3 src/common/check_proof.py benchmark/level1/Euclid/GCD_GCD3.tla [--tlapm PATH] [--timeout SECS]
 ```
 
 Exit codes: `0` = PASS, `1` = FAIL, `2` = CHEATING, `3` = ERROR.
 
-### Generate benchmarks from source
+### Generate Level 1 benchmarks from source
 
 ```bash
-python3 generate_benchmarks.py --source-dir /path/to/tlaps-examples --output-dir benchmark/
+python3 src/level1/generate.py
 ```
 
-Extracts each theorem with a real proof, replaces the last proof with `PROOF OBVIOUS`, and writes one benchmark file per theorem.
+Extracts each theorem with a real proof, replaces the last proof with `PROOF OBVIOUS`, and writes one benchmark file per theorem to `benchmark/level1/`.
 
 ## Related Work
 

@@ -27,10 +27,11 @@ STDLIB_MODULES = {
     'BagsTheorems', 'RealNumberTheorems', 'TLAPS',
 }
 
-# Directories to process (top-level module dirs)
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# Directories to process (top-level module dirs).
+# File now lives at <repo>/src/level1/generate.py; ascend two levels for the repo root.
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 SOURCE_ROOT = os.path.join(PROJECT_ROOT, 'source')
-BENCHMARK_DIR = os.path.join(PROJECT_ROOT, 'benchmark')
+BENCHMARK_DIR = os.path.join(PROJECT_ROOT, 'benchmark', 'level1')
 
 
 def find_source_dirs():

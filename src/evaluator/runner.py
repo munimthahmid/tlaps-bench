@@ -29,14 +29,17 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# File now at <repo>/src/evaluator/runner.py — ascend two levels for the repo root.
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..'))
 
-# In Docker: benchmark at /benchmark, scripts at /scripts
-# On host: both relative to SCRIPT_DIR
+# In Docker: benchmark at /benchmark, scripts at /scripts (set in docker-compose).
+# On host: default to benchmark/level1 under the repo root.
 if os.path.isdir('/benchmark'):
     BENCHMARK_DIR = '/benchmark'
+    CHECK_PROOF_SCRIPT = '/scripts/check_proof_bin'
 else:
-    BENCHMARK_DIR = os.path.join(SCRIPT_DIR, 'benchmark')
-CHECK_PROOF_SCRIPT = os.path.join(SCRIPT_DIR, 'check_proof_bin')
+    BENCHMARK_DIR = os.path.join(REPO_ROOT, 'benchmark', 'level1')
+    CHECK_PROOF_SCRIPT = os.path.join(REPO_ROOT, 'check_proof_bin')
 
 # Persistent tlapm location — use /opt/tlapm in docker, ~/.tlapm on host
 TLAPM_PERSISTENT = '/opt/tlapm' if os.path.isdir('/opt/tlapm') else os.path.expanduser('~/.tlapm')
@@ -200,13 +203,18 @@ def update_summary(results, output_dir, total_benchmarks):
             json.dump(results, f, indent=2)
 
 
-def build_prompt(benchmark_basename):
-    """Build the proof-writing prompt for codex."""
-    name_no_ext = os.path.splitext(benchmark_basename)[0]
-    tlapm_path = TLAPM_PERSISTENT
-    return f"""\
-The file {benchmark_basename} contains a TLA+ theorem that cannot be verified by tlapm (the TLA+ Proof System) yet. The last theorem in the file has `PROOF OBVIOUS` as a placeholder proof that will fail. Preceding theorems have `PROOF OMITTED` which means they are admitted and available as lemmas. Please replace `PROOF OBVIOUS` with a complete, valid TLAPS proof so that tlapm can successfully verify it. The tlapm standard library is at {tlapm_path}/lib/tlapm/stdlib — you may read and reference the modules there, but do not modify any files under {tlapm_path}/. You can run tlapm directly: `{tlapm_path}/bin/tlapm -I {tlapm_path}/lib/tlapm/stdlib {benchmark_basename}`. Keep editing your proof until tlapm shows no errors — do not give up or stop early. If a proof attempt fails, try a different strategy. Keep iterating until `./check_proof_bin {benchmark_basename}` reports PASS. You should not change any module header, operator definitions, CONSTANT or VARIABLE declarations, ASSUME/ASSUMPTION declarations, or THEOREM/LEMMA statements that appear above `PROOF OBVIOUS`; you should not change any preceding `PROOF OMITTED` proofs. You should never use `PROOF OMITTED` or bare `OMITTED` in your proof. You are not allowed to introduce new top-level AXIOM, ASSUME, ASSUMPTION, CONSTANT, or VARIABLE declarations, or weaken theorem statements or add extra hypotheses. Before you are done, run `./check_proof_bin {benchmark_basename}` to verify you have not made any illegal changes. Do not browse or fetch any external websites — network access is disabled. Do not look for example proof files or solutions outside the current working directory. Write the proof based on your own knowledge of TLA+ and TLAPS.\
-"""
+_PROMPT_DIR = os.path.join(SCRIPT_DIR, 'prompts')
+
+
+def build_prompt(benchmark_basename, level='level1'):
+    """Build the proof-writing prompt by loading the template for the given level."""
+    template_path = os.path.join(_PROMPT_DIR, f'{level}.txt')
+    with open(template_path, 'r') as f:
+        template = f.read()
+    return template.format(
+        benchmark_basename=benchmark_basename,
+        tlapm_path=TLAPM_PERSISTENT,
+    )
 
 
 def run_single_benchmark(args_tuple):

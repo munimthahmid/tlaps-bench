@@ -20,11 +20,13 @@ services:
       - HOST_UID=${HOST_UID:-1000}
       - HOST_GID=${HOST_GID:-1000}
     volumes:
-      # Benchmark files (read-only)
-      - ../benchmark:/benchmark:ro
-      # Scripts — checker as binary (not readable source), runner as source
+      # Benchmark files (read-only) — mount level1 specifically for L1 runs
+      - ../benchmark/level1:/benchmark:ro
+      # Scripts — checker as binary (not readable source), runner as source.
+      # Bind-mount the prompts dir too so prompt edits don't require a rebuild.
       - ../check_proof_bin:/scripts/check_proof_bin:ro
-      - ../run_codex_benchmark.py:/scripts/run_codex_benchmark.py:ro
+      - ../src/evaluator/runner.py:/scripts/runner.py:ro
+      - ../src/evaluator/prompts:/scripts/prompts:ro
       # Optional: custom codex config (for Azure users etc.)
       - ./codex-config.toml:/mnt/codex-config.toml:ro
       # Results output

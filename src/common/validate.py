@@ -28,9 +28,11 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Dict
 
-# Import from generate_benchmarks
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from generate_benchmarks import (
+# Internal imports — generate.py is in ../level1, cheating_detection here.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.join(_HERE, '..', 'level1'))
+from generate import (
     parse_theorems, parse_module_name, find_tla_files,
     STDLIB_MODULES, SOURCE_ROOT, BENCHMARK_DIR, PROJECT_ROOT,
     find_source_dirs, build_dependency_graph, find_all_deps,

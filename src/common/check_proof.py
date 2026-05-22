@@ -28,6 +28,7 @@ import tempfile
 import argparse
 import glob
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cheating_detection import (
     detect_proof_omitted, detect_extra_axioms,
     detect_preamble_modification, detect_empty_proof,

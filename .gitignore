@@ -278,3 +278,4 @@ results_codex_intermediate/
 *.toolbox/
 *.thy
 CLAUDE.md
+lib/
