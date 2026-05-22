@@ -28,8 +28,8 @@ STDLIB_MODULES = {
 }
 
 # Directories to process (top-level module dirs).
-# File now lives at <repo>/src/level1/generate.py; ascend two levels for the repo root.
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+# File lives at <repo>/src/dataset/level1/generate.py; ascend three levels for the repo root.
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 SOURCE_ROOT = os.path.join(PROJECT_ROOT, 'source')
 BENCHMARK_DIR = os.path.join(PROJECT_ROOT, 'benchmark', 'level1')
 
