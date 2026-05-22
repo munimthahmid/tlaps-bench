@@ -47,6 +47,7 @@ THEOREM IsBijectionCardinality ==
   \A f, S, T : /\ IsFiniteSet(S)
                /\ IsFiniteSet(T)
                => (IsBijection(f, S, T) <=> Cardinality(S) = Cardinality(T))
+PROOF OBVIOUS
 
 
 -------------------------------------------------------

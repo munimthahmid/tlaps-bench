@@ -496,6 +496,7 @@ P2aInv == \A m \in msgs :
 THEOREM PT1 == TypeOK /\ P1bInv /\ P1cInv =>
                  \A Q \in Quorum, b \in Ballot, v \in Value :
                      ShowsSafeAt(Q, b, v) => V!SafeAt(b, v) 
+PROOF OBVIOUS
 
 PInv == TypeOK /\ PAccInv /\ P1bInv /\ P1cInv /\ P2aInv  
 

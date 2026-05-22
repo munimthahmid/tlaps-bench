@@ -1,4 +1,4 @@
-------------------------------- MODULE Record_SV!Spec -------------------------------
+------------------------------- MODULE Record_SV_Spec -------------------------------
 (*
 It is necessary to use type invariant when reasoning about EXCEPT expressions.
 See step <4>2 in the proof for Spec => SV!Spec.

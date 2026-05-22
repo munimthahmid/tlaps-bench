@@ -504,6 +504,7 @@ PInv == TypeOK /\ PAccInv /\ P1bInv /\ P1cInv /\ P2aInv
 (* voting algorithm.                                                       *)
 (***************************************************************************)
 THEOREM Spec => [](chosen = V!chosen)
+PROOF OBVIOUS
 
 (***************************************************************************)
 (* The four theorems above have been checked by TLC for a model with 3     *)

@@ -499,12 +499,18 @@ P2aInv == \A m \in msgs :
 THEOREM PT1 == TypeOK /\ P1bInv /\ P1cInv =>
                  \A Q \in Quorum, b \in Ballot, v \in Value :
                      ShowsSafeAt(Q, b, v) => V!SafeAt(b, v) 
+  PROOF OMITTED
+
 
 PInv == TypeOK /\ PAccInv /\ P1bInv /\ P1cInv /\ P2aInv  
 
 THEOREM Invariance == Spec => []PInv
+  PROOF OMITTED
+
 
 THEOREM Implementation == Spec => V!Spec
+  PROOF OMITTED
+
 
 (***************************************************************************)
 (* The following result shows that our definition of `chosen' is the       *)
@@ -512,6 +518,8 @@ THEOREM Implementation == Spec => V!Spec
 (* voting algorithm.                                                       *)
 (***************************************************************************)
 THEOREM Spec => [](chosen = V!chosen)
+  PROOF OMITTED
+
 
 (***************************************************************************)
 (* The four theorems above have been checked by TLC for a model with 3     *)

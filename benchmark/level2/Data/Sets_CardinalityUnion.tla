@@ -54,6 +54,7 @@ THEOREM CardinalityUnion ==
                       /\ Cardinality(S \cup T) =
                               Cardinality(S) + Cardinality(T)
                               - Cardinality(S \cap T)  
+PROOF OBVIOUS
 
 -----------------------------------------------------------------------------
 

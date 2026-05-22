@@ -498,6 +498,7 @@ PInv == TypeOK /\ PAccInv /\ P1bInv /\ P1cInv /\ P2aInv
 
 
 THEOREM Implementation == Spec => V!Spec
+PROOF OBVIOUS
 
 (***************************************************************************)
 (* The following result shows that our definition of `chosen' is the       *)

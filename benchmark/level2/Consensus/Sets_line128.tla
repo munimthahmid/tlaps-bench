@@ -46,6 +46,7 @@ THEOREM
     ASSUME NEW n \in Nat, NEW m \in Nat,
            IsBijection([x \in 1..n |-> x], 1..n, 1..m)
     PROVE  n = m
+PROOF OBVIOUS
 
 
 

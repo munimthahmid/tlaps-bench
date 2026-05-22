@@ -740,6 +740,8 @@ PROOF OMITTED
 THEOREM AlwaysForall ==
            ASSUME NEW CONSTANT S, NEW TEMPORAL P(_)
            PROVE  (\A s \in S : []P(s)) <=> [](\A s \in S : P(s))
+  PROOF OMITTED
+
 
 LEMMA EventuallyAlwaysForall == 
         ASSUME NEW CONSTANT S, IsFiniteSet(S),

@@ -1,4 +1,4 @@
--------------------------------- MODULE PaxosTuple_V!Spec --------------------------
+-------------------------------- MODULE PaxosTuple_V_Spec --------------------------
 EXTENDS Integers, Sets
 -----------------------------------------------------------------------------
 CONSTANT Value, Acceptor, Quorum
@@ -77,4 +77,5 @@ votes == [a \in Acceptor |->
 V == INSTANCE Voting
 
 THEOREM Spec => V!Spec
+PROOF OBVIOUS
 ============================================================================

@@ -668,6 +668,7 @@ ProperSubsetRel(S) ==
 THEOREM AlwaysForall ==
            ASSUME NEW CONSTANT S, NEW TEMPORAL P(_)
            PROVE  (\A s \in S : []P(s)) <=> [](\A s \in S : P(s))
+PROOF OBVIOUS
 
 -----------------------------------------------------------------------------
 (***************************************************************************)

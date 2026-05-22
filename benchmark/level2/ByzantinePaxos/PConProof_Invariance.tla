@@ -497,6 +497,7 @@ P2aInv == \A m \in msgs :
 PInv == TypeOK /\ PAccInv /\ P1bInv /\ P1cInv /\ P2aInv  
 
 THEOREM Invariance == Spec => []PInv
+PROOF OBVIOUS
 
 
 (***************************************************************************)

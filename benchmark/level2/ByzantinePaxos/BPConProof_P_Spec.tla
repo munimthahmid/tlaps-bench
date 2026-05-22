@@ -1,5 +1,5 @@
 
----------------------------- MODULE BPConProof_P!Spec ------------------------------
+---------------------------- MODULE BPConProof_P_Spec ------------------------------
 (***************************************************************************)
 (* This module specifies a Byzantine Paxos algorithm--a version of Paxos   *)
 (* in which failed acceptors and leaders can be malicious.  It is an       *)
