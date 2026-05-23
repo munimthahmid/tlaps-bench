@@ -15,13 +15,30 @@ file benchmark/level2/<Module>/<File>_<TheoremName>.tla in which:
     proofs stripped (`PROOF OMITTED`).
 
 Top-level selection (OR rule, applied to THEOREM-keyword decls only):
-  1. Shape rule: statement is `<S> => ...` where `<S>` is a spec formula.
-  2. Graph rule: not consumed by any other theorem's BY/USE/DEFS.
+  1. Unnamed rule: T has no name (TLA+ syntax can't reference it → standalone).
+  2. Shape rule:   statement is `<S> => ...` where `<S>` is a spec formula.
+  3. Graph rule:   T has a name and no other theorem references it.
 
-Spec formulas are identified by SANY-AST shape (see tools/sany-dump/),
+Post-selection filters:
+  A. Manual-proof filter: drop candidates whose source has no structured
+     TLAPS proof (bare statement / PROOF OMITTED / PROOF OBVIOUS). L2's
+     contract is "AI writes a proof, compared against a human reference",
+     so candidates without ground truth are out of scope for now.
+     Known cost: PaxosTuple.tla:79 `Spec => V!Spec` (proof lives in the
+     companion file PaxosProof.tla) and PConProof.tla:520
+     `Spec => [](chosen = V!chosen)` (model-checked by TLC, no TLAPS
+     proof written). Both are genuine main theorems; they can be revived
+     later in a separate "no-reference-proof" track if we ever want it.
+  B. Within-file dedup: collapse exact-text-duplicate statements. Catches
+     Peterson.tla L124/L134/L183 — three identical
+     `THEOREM Spec => []MutualExclusion` decls the author wrote to
+     showcase different prover backends; as L2 prompts they are
+     indistinguishable, so keep the first by line.
+
+Spec formulas are identified by SANY-AST shape (see src/dataset/sany-dump/),
 not by name match. The audit log flags non-`Spec` names, zero specs,
-multiple specs, multiple top-level theorems, and unnamed top-levels —
-all worth a human's eyeball.
+multiple specs, multiple top-level theorems, unnamed top-levels, and
+every drop made by filters A and B.
 """
 
 import argparse
@@ -102,6 +119,43 @@ def find_top_level(theorems, spec_formulas):
     return out
 
 
+def _statement_text(target_thm, source_lines):
+    """Extract the statement portion of a THEOREM (everything before its proof body).
+
+    SANY's `loc` for a TheoremNode spans the whole `THEOREM ... <proof>` range,
+    so we trim off the proof using `proof_loc.line_start - 1`. If there is no
+    proof, the statement runs to `loc.line_end`. Returned text is the joined
+    source lines, stripped of surrounding whitespace.
+    """
+    loc = target_thm['loc']
+    ploc = target_thm.get('proof_loc')
+    if ploc and ploc.get('line_start', -1) > 0:
+        end_line = ploc['line_start'] - 1
+    else:
+        end_line = loc['line_end']
+    return ''.join(source_lines[loc['line_start'] - 1 : end_line]).strip()
+
+
+def _has_manual_proof(target_thm, source_lines):
+    """Return True iff the source has a structured TLAPS proof body.
+
+    Returns False for:
+      - no proof body at all (SANY emits no `proof_loc`, e.g. PConProof.tla L505)
+      - `PROOF OMITTED` / `OMITTED` placeholder
+      - `PROOF OBVIOUS` / `OBVIOUS` placeholder
+
+    All other proof bodies (a `<N>` proof tree, a `BY ...` leaf, a `PROOF BY`
+    line, etc.) count as manual proofs.
+    """
+    ploc = target_thm.get('proof_loc')
+    if not (ploc and ploc.get('line_start', -1) > 0):
+        return False
+    body = ''.join(source_lines[ploc['line_start'] - 1 : ploc['line_end']]).strip()
+    if body.startswith('PROOF'):
+        body = body[5:].lstrip()
+    return body not in ('OMITTED', 'OBVIOUS')
+
+
 def target_theorem_name(theorem):
     """Pick a name string used for the benchmark filename.
 
@@ -149,19 +203,13 @@ def build_benchmark(source_lines, dump, target_thm, benchmark_module_name):
     for t in dump['theorems']:
         if id(t) == target_id:
             ploc = t.get('proof_loc')
-            if ploc and ploc.get('line_start', -1) > 0:
-                # Replace the target's proof body with `PROOF OBVIOUS`.
-                edits.append((ploc['line_start'], ploc['line_end'], 'PROOF OBVIOUS\n'))
-            else:
-                # Source THEOREM has no proof body at all (e.g. PConProof.tla L505).
-                # Keep the statement and append `PROOF OBVIOUS` so the benchmark
-                # presents a fill-in-the-proof obligation rather than a bare claim.
-                loc = t['loc']
-                end_line = loc['line_end']
-                last_line = source_lines[end_line - 1]
-                if not last_line.endswith('\n'):
-                    last_line = last_line + '\n'
-                edits.append((end_line, end_line, last_line + 'PROOF OBVIOUS\n'))
+            # Filter A in process_file guarantees the target has a real proof body.
+            assert ploc and ploc.get('line_start', -1) > 0, (
+                f"build_benchmark invoked on target without proof body at "
+                f"{source_lines[t['loc']['line_start'] - 1].rstrip()!r}; "
+                "should have been filtered upstream."
+            )
+            edits.append((ploc['line_start'], ploc['line_end'], 'PROOF OBVIOUS\n'))
         else:
             # Delete other theorems/lemmas entirely.
             loc = t['loc']
@@ -276,6 +324,46 @@ def process_file(source_path, audit_writer, output_root, module_subdir=None):
 
     theorem_candidates = [t for t in dump['theorems'] if t['_keyword'] == 'THEOREM']
     top_level = find_top_level(theorem_candidates, spec_formulas)
+
+    # Filter A — require a manual TLAPS proof in the source.
+    # See module docstring for the rationale and the two known-dropped main
+    # theorems. We treat PROOF OMITTED and PROOF OBVIOUS as "no manual proof"
+    # because both leave nothing for AI to compare against (OMITTED is an
+    # explicit deferral; OBVIOUS is a 1-token placeholder that passes
+    # trivially and so carries no benchmark signal).
+    survivors = []
+    for entry in top_level:
+        target_thm = entry[0]
+        if _has_manual_proof(target_thm, source_lines):
+            survivors.append(entry)
+        else:
+            line = target_thm['loc']['line_start']
+            name = target_thm['name'] or f"<unnamed L{line}>"
+            audit_writer.write(
+                f"[level2-audit] {source_path}: top-level THEOREM {name} at line "
+                f"{line} has no manual TLAPS proof body — skipped (filter A)\n"
+            )
+    top_level = survivors
+
+    # Filter B — within-file exact-text statement dedup. Keep first by line.
+    seen_stmts = {}
+    deduped = []
+    for entry in top_level:
+        target_thm = entry[0]
+        stmt = _statement_text(target_thm, source_lines)
+        if stmt in seen_stmts:
+            line = target_thm['loc']['line_start']
+            kept_line = seen_stmts[stmt]
+            name = target_thm['name'] or f"<unnamed L{line}>"
+            audit_writer.write(
+                f"[level2-audit] {source_path}: top-level THEOREM {name} at line "
+                f"{line} has identical statement text to candidate kept at line "
+                f"{kept_line} — skipped (filter B)\n"
+            )
+        else:
+            seen_stmts[stmt] = target_thm['loc']['line_start']
+            deduped.append(entry)
+    top_level = deduped
 
     if not top_level:
         audit_writer.write(
