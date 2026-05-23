@@ -341,10 +341,20 @@ def main():
         sys.exit(1)
 
     ensure_tlapm()
-    tlapm_path = os.path.join(TLAPM_PERSISTENT, 'bin', 'tlapm')
-    tlapm_lib = find_tlapm_lib(tlapm_path)
+    # tlapm has two paths the runner tracks separately:
+    #   tlapm_root — install root (TLAPM_PERSISTENT). The prompt template
+    #                appends `/bin/tlapm` itself, and uses tlapm_root for
+    #                "do not modify any files under {tlapm_path}/".
+    #   tlapm_bin  — the binary, used by find_tlapm_lib (which derives the
+    #                lib dir as two levels above the binary).
+    # Conflating the two caused the prompt to expand to
+    # `<install_root>/bin/tlapm/bin/tlapm`, which the agent then ran and
+    # got "Not a directory" on every tlapm invocation.
+    tlapm_root = TLAPM_PERSISTENT
+    tlapm_bin = os.path.join(tlapm_root, 'bin', 'tlapm')
+    tlapm_lib = find_tlapm_lib(tlapm_bin)
     if not tlapm_lib:
-        print(f"ERROR: tlapm lib not found near {tlapm_path}")
+        print(f"ERROR: tlapm lib not found near {tlapm_bin}")
         sys.exit(1)
 
     benchmark_root, checker_binary = resolve_paths()
@@ -381,7 +391,7 @@ def main():
             check_timeout=args.check_timeout,
             backend=backend,
             level=level,
-            tlapm_path=tlapm_path,
+            tlapm_path=tlapm_root,
             tlapm_lib=tlapm_lib,
         )
         for bf in benchmark_files
