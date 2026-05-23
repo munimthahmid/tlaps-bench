@@ -9,7 +9,7 @@ from typing import Optional, Tuple
 from .base import AgentBackend
 
 
-DEFAULT_MODEL = "gpt55"
+DEFAULT_MODEL = "gpt-5.5"
 
 
 class CodexBackend(AgentBackend):
