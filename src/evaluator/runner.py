@@ -230,7 +230,9 @@ def run_single_benchmark(item: WorkItem):
                     start_new_session=True,  # own process group for clean kill
                 )
                 try:
-                    _, stderr = proc.communicate(input=prompt, timeout=item.timeout)
+                    # timeout <= 0 means no limit (communicate waits forever).
+                    _to = item.timeout if item.timeout and item.timeout > 0 else None
+                    _, stderr = proc.communicate(input=prompt, timeout=_to)
                 except subprocess.TimeoutExpired:
                     # Kill entire process group (agent + tlapm + z3 + isabelle)
                     os.killpg(proc.pid, signal.SIGKILL)
@@ -327,7 +329,7 @@ def main():
     parser.add_argument('--jobs', type=int, default=1, help='Parallel agent runs')
     parser.add_argument('--filter', default=None, help='Only run benchmarks matching pattern')
     parser.add_argument('--timeout', type=int, default=7200,
-                        help='Agent timeout per benchmark in seconds (default: 7200)')
+                        help='Agent timeout per benchmark in seconds (default: 7200; 0 = no limit)')
     parser.add_argument('--check-timeout', type=int, default=120,
                         help='Checker timeout per benchmark in seconds (default: 120)')
     parser.add_argument('--output-dir', default=None, help='Output directory')
