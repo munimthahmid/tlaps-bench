@@ -25,10 +25,6 @@ Spec == Init /\ [][Next]_<<x,y>>
 -------------------------------------------------------
 ResultCorrect == (x = y) => x = GCD(M, N)
 
-InductiveInvariant ==
-  /\ x \in Number
-  /\ y \in Number
-  /\ GCD(x, y) = GCD(M, N)
 -------------------------------------------------------
 USE DEF Number
 

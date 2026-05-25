@@ -15,8 +15,8 @@ Message ==
   \cup {"2b"} \X Acceptor \X Ballot \X Value
 -----------------------------------------------------------------------------
 VARIABLE maxBal,
-         maxVBal, \* <<maxVBal[a], maxVal[a]>>: the vote with the largest ballot number cast by a;
-         maxVal,  \* it is <<-1, None>> if a has not cast any vote.
+         maxVBal, 
+         maxVal,  
          msgs
 
 Send(m) == msgs' = msgs \cup {m}

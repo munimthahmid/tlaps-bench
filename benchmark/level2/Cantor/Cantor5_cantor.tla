@@ -1,4 +1,4 @@
-(* Contributed by Damien Doligez *)
+
 
 -------------- MODULE Cantor5_cantor ------------------
 THEOREM cantor ==

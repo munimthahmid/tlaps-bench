@@ -6,9 +6,34 @@ Transform a complete TLA+ + TLAPS source file into a Level 2 benchmark: keep the
 
 ## Generation rule (core principle, one sentence)
 
-> **Keep the model and the statement of the top-level theorem; delete all proof content.**
+> **Keep only what is needed to *state* the top-level theorem; delete every other definition, all other theorems/lemmas, all proof content, and all comments.**
 
-"Model" means anything that is **not** a `THEOREM`/`LEMMA` declaration. We deliberately do **not** distinguish whether a given `==` definition is an inductive invariant or a user-facing property — both are kept. That distinction is a semantic call made by the proof engineer and cannot be reliably automated from static analysis. We do not try.
+This is the **strict** L2 contract Ruize nailed down in Issue #1 / #3 (Tianyin
+approved): "strip everything that is a proof artifact — inductive invariants,
+helper lemmas, and all proof bodies — keeping only the system model (Init,
+Next, Spec), the target property, and the bare THEOREM statement. AI must
+discover invariants and design the proof structure from scratch."
+
+**How we decide what's "needed to state the theorem" — reachability, not
+classification.** We do **not** try to label each `==` as "inductive invariant"
+vs "user-facing property" (a semantic call that can't be automated). Instead we
+compute the transitive closure of definitions referenced — over the SANY AST —
+from the target theorem's *statement* (plus the kept `ASSUME`/`AXIOM`). A
+definition survives iff it is in that closure; everything else is a proof
+artifact and is deleted. This is purely structural and reliably automatable.
+
+Consequence for invariants: in `Spec => []Inv` the invariant `Inv` is part of
+the statement, so it (and its decomposition) is reachable and **kept** — the
+goal cannot be hidden. In `Spec => []Safety` (or `=> []Consistency`, `=> C!Spec`)
+the auxiliary invariant `Inv`/`TypeOK`/`MsgInv`/`SafeAt`/… is *not* referenced by
+the statement, so it is **stripped**. The rule self-selects correctly per target.
+
+> **Historical note.** An earlier revision of this generator took the
+> *pragmatic* path — "keep all `==` definitions, both invariants and
+> properties" — because classifying them seemed un-automatable. That handed the
+> AI the inductive invariant (e.g. EWD840's Dijkstra invariant verbatim) and
+> contradicted the agreed strict design. The reachability rule above supersedes
+> it: it strips the invariant without ever classifying anything.
 
 ## Detailed operation
 
@@ -18,12 +43,17 @@ For each **top-level theorem** `T` in source file `X.tla`, generate one benchmar
 |---|---|
 | Module header / EXTENDS | Keep |
 | CONSTANT / VARIABLE / ASSUME / AXIOM | Keep |
-| `==` definitions (operator / INSTANCE binding) | **Keep all** |
+| `==` definition reachable from `T`'s statement (model + property) | Keep |
+| `==` definition **not** reachable from `T`'s statement (inductive invariant, helper operator) | **Delete** |
+| Named `INSTANCE` binding reachable from `T`'s statement (e.g. `C` in `Spec => C!Spec`) | Keep |
+| Named `INSTANCE` binding not reachable | Delete (and skip copying its dep module) |
+| Unnamed (bare) `INSTANCE` | Keep (imports names unqualified; can't be tracked by reachability) |
 | Target THEOREM `T`'s statement | Keep |
 | Target THEOREM `T`'s proof body | Delete, replace with `PROOF OBVIOUS` |
 | All other THEOREMs (statement + proof) | Delete |
 | All LEMMAs (statement + proof) — never eligible as target, see keyword filter below | Delete |
-| Dependency modules referenced by INSTANCE (e.g. `Consensus.tla`) | Copy alongside the benchmark file with all proofs stripped to `PROOF OMITTED` |
+| All comments (`\*` line, `(* … *)` block) — in the benchmark and in copied deps | Delete |
+| Dependency modules referenced by EXTENDS, or by a *kept* INSTANCE (e.g. `Consensus.tla`) | Copy alongside, all proofs stripped to `PROOF OMITTED`, all comments stripped |
 
 ## Top-level theorem identification
 
@@ -116,39 +146,38 @@ Example audit entries:
 ### Implementation notes
 
 - Spec formula detection walks SANY's semantic AST. The operator tags exposed by SANY for `[][_]_vars`, `WF_vars`, `SF_vars`, and top-level `/\` make this a direct AST pattern match — no regex on source text, no name matching.
-- The theorem-use graph is built by walking each theorem/lemma's `ProofNode` and collecting names referenced from `BY` / `USE` / `DEFS` clauses, resolving each against the set of theorem/lemma declarations in scope.
+- The theorem-use graph (for top-level selection) is built by walking each theorem/lemma's `ProofNode` and collecting names referenced from `BY` / `USE` / `DEFS` clauses, resolving each against the set of theorem/lemma declarations in scope.
+- The **definition-dependency graph** (for the reachability strip) is a separate edge set: for every operator definition, every `ASSUME`/`AXIOM`, every `INSTANCE` (its `WITH` substitutions), and every theorem *statement*, the dumper walks the semantic subtree and records each referenced in-module operator / INSTANCE name (`references` / `statement_references` fields). INSTANCE-qualified uses like `C!Spec` are mapped back to the local binding `C`. The Python generator seeds from the target's `statement_references` + all `ASSUME`/`AXIOM` references and takes the transitive closure; unreached definitions are deleted.
+- Comment stripping is a TLA+-aware scan applied after the deletions: it removes `\*` line comments and nested `(* … *)` blocks, skips comment markers inside string literals, and preserves newlines (so the `---- MODULE` / `====` lines survive). Residual blank-line runs are collapsed to one.
 
 ## Applied to Ruize's three examples
 
 ### SimpleMutex.tla
 
-Source has 5 THEOREMs: `Safety`, `Mutex`, `Invariance`, `Initialization`, `TLAInvariance`. Only `Safety` matches `Spec => ...`.
+Source has 5 THEOREMs: `Safety`, `Mutex`, `Invariance`, `Initialization`, `TLAInvariance`, plus an unnamed `ASSUME … PROVE TypeOK' /\ Inv'` at L140. `Safety` matches `Spec => ...` (shape) and the unnamed one matches the unnamed rule.
 
-**Generates 1 benchmark**: `benchmark/level2/SimpleMutex/SimpleMutex_Safety.tla`
-- Keep: all `==` definitions (including `TypeOK`, `Inv`, `IndInvSpec`, `Termination`, `MutualExclusion`, `Init`, `Next`, `Spec`, …)
-- Delete: the other 4 theorems + all proof bodies
+**Generates 2 benchmarks**, e.g. `SimpleMutex_Safety.tla` (target `Spec => []MutualExclusion`):
+- Keep: only the definitions reachable from `Spec => []MutualExclusion` (`Init`, `Next`, `Spec`, `MutualExclusion`, and what they reference)
+- Delete: `TypeOK`, `Inv`, `IndInvSpec`, … (not reachable — proof artifacts), the other theorems, all proof bodies, all comments
 
 ### EWD840.tla
 
-Source has 1 unnamed top-level theorem (L143: `THEOREM Spec => []TerminationDetection`) and 2 LEMMAs.
+Source has 1 unnamed top-level theorem (`THEOREM Spec => []TerminationDetection`) and 2 LEMMAs.
 
-**Generates 1 benchmark**: `benchmark/level2/EWD840/EWD840_TerminationDetection.tla`
-- Keep: all `==` definitions (including `Inv`, `TerminationDetection`, …)
-- Delete: 2 LEMMAs + the top-level theorem's proof body
+**Generates 1 benchmark**: `EWD840_TerminationDetection.tla`
+- Keep: the model up to `Spec` + `TerminationDetection` (+ `terminationDetected`)
+- Delete: `Inv` (Dijkstra's invariant — *the* hint), `TypeOK`, the sibling properties `NeverBlack` / `NeverChangeColor` / `Liveness` / `AllNodesTerminateIfNoMessages`, the 2 LEMMAs, the proof body, and all comments (incl. the "Dijkstra's invariant" banner)
 
 ### Paxos.tla
 
 Source has 5 LEMMAs + 3 top-level THEOREMs (`Invariant`, `Consistent`, `Refinement`).
 
-**Generates 3 benchmarks**:
-- `benchmark/level2/Paxos/Paxos_Invariant.tla` — target `Spec => []Inv`
-- `benchmark/level2/Paxos/Paxos_Consistent.tla` — target `Spec => []Consistency`
-- `benchmark/level2/Paxos/Paxos_Refinement.tla` — target `Spec => C!Spec`
+**Generates 3 benchmarks** (each target strips differently, by reachability):
+- `Paxos_Consistent.tla` — target `Spec => []Consistency`: keep `Phase1a/1b/2a/2b`, `Spec`, `Consistency`, `Chosen`, `ChosenIn`, `VotedForIn`; **delete `Inv`, `TypeOK`, `MsgInv`, `AccInv`, `SafeAt`, `WontVoteIn`, `Messages`, and the `C` INSTANCE** (Consensus.tla not copied for this one)
+- `Paxos_Refinement.tla` — target `Spec => C!Spec`: same model, but **keep `C` + `chosenBar`** (reachable via `C!Spec`) so `Consensus.tla` is copied; delete the invariants
+- `Paxos_Invariant.tla` — target `Spec => []Inv`: here `Inv == TypeOK /\ MsgInv /\ AccInv` **is the goal**, so it and its decomposition are reachable and **kept** — the invariant can't be hidden when it's what you're asked to prove
 
-For each benchmark:
-- Keep: all `==` definitions (including `Inv`, `Consistency`, `TypeOK`, `MsgInv`, `AccInv`, `SafeAt`, `WontVoteIn`, `C` (the INSTANCE binding), and all of `Phase1a`/`1b`/`2a`/`2b`, etc.)
-- Delete: 5 LEMMAs + the other 2 non-target THEOREMs + the proof body of the target theorem itself
-- Keeping the INSTANCE binding means `Consensus.tla` is also copied to the same directory (needed by all 3 benchmarks; copying it for the ones that don't strictly need it is harmless)
+Common to all: delete the 5 LEMMAs, the other 2 non-target THEOREMs, the target's proof body, and all comments.
 
 ## AI's view
 
@@ -158,7 +187,8 @@ MODULE X_T
 EXTENDS ...
 CONSTANT ...
 VARIABLE ...
-\* All == definitions go here
+\* Only the == definitions reachable from the theorem statement
+\* (the system model + the property being stated) go here.
 ...
 
 THEOREM T == Spec => X
@@ -166,23 +196,32 @@ PROOF OBVIOUS
 ====
 ```
 
-The AI's task is to replace `PROOF OBVIOUS` with a real proof. It **sees no helper LEMMAs** and must design the entire proof decomposition itself — which sub-goals to prove, which invariant to use, how to split on `Next` cases — all from scratch.
+The AI's task is to replace `PROOF OBVIOUS` with a real proof. It **sees no
+helper LEMMAs, no inductive invariant, no helper operators, and no comments** —
+only the system model and the property. It must rediscover the inductive
+invariant *and* design the entire proof decomposition itself — which sub-goals
+to prove, which invariant to use, how to split on `Next` cases — all from
+scratch. (Exception: when the target property *is* an invariant, as in
+`Spec => []Inv`, that invariant is the goal and is necessarily visible.)
 
 ## Algorithm outline
 
-1. **Parse source file**: use SANY's semantic API (see `Specula/tools/cfa/PrintCFG.java` for a working example of this hack), and dump JSON with: every operator definition, every THEOREM/LEMMA node (statement + proof source-line range), every ASSUME/AXIOM, every CONSTANT/VARIABLE, every INSTANCE binding, plus the spec-formula set. Apalache `parse` is unusable here because it discards theorems.
+1. **Parse source file**: use SANY's semantic API (see `Specula/tools/cfa/PrintCFG.java` for a working example of this hack), and dump JSON with: every operator definition (+ its body `references`), every THEOREM/LEMMA node (statement + proof source-line range, + `statement_references`), every ASSUME/AXIOM (+ `references`), every CONSTANT/VARIABLE, every INSTANCE binding (+ `WITH`-substitution `references`), plus the spec-formula set. Apalache `parse` is unusable here because it discards theorems.
 2. **Recover keyword** for each theorem-like node by reading the first token on its `loc.line_start` (SANY collapses THEOREM/LEMMA/AXIOM/COROLLARY/PROPOSITION into one `TheoremNode` kind).
 3. **Identify top-level theorems**: among THEOREM-keyword candidates, apply the OR rule (shape OR graph). Emit audit entries for the cases listed above.
 4. **For each top-level theorem, emit a benchmark file**:
+   - Compute the **reachable set**: transitive closure over the definition-dependency graph, seeded from the target's `statement_references` + all ASSUME/AXIOM references.
    - Start from the original source text
-   - Delete every other theorem-or-lemma node by line range (the target itself stays)
    - Replace the target theorem's `proof_loc` line range with `PROOF OBVIOUS`
+   - Delete every other theorem-or-lemma node by line range
+   - Delete every operator definition / named INSTANCE binding **not in the reachable set** (the inductive invariants and helper operators)
+   - Strip all comments; collapse blank-line runs
    - Rename the module header to `<File>_<TheoremName>` (or `<File>_<TheoremName>_L<line>` on collision)
-5. **Handle dependency modules**: walk all INSTANCE references, copy the referenced `.tla` files into the benchmark output directory, and strip their proofs (replace with `PROOF OMITTED`) — reusing the logic already in `src/dataset/level1/generate.py`.
+5. **Handle dependency modules**: copy the EXTENDS deps and the deps of *kept* INSTANCEs into the output directory, strip their proofs to `PROOF OMITTED` (reusing `src/dataset/level1/generate.py`) and strip their comments. Deps of stripped INSTANCEs are not copied.
 
 ## Out of scope
 
-- **Deciding which generated benchmarks have weak signal and should be skipped**: this is a human evaluation call, not a generator concern. The generator carries no hardcoded "skip if target is an inductive invariant" or similar special-case logic.
+- **Deciding which generated benchmarks have weak signal and should be skipped**: this is a human evaluation call, not a generator concern. The generator carries no hardcoded "skip if target is an inductive invariant" — though note the reachability rule *does* keep an invariant when it is the target's goal (`Spec => []Inv`), since the goal cannot be hidden.
 - **Anti-cheating extensions for L2**: an AI solving L2 may need to introduce new top-level `==` definitions (its own invariant / lemma). The current `check_proof.py` rule that "preamble must not be modified" needs to be loosened. That work is **deferred** until the L2 generator lands and we have a baseline.
 - **Wiring Apalache or TLAPS into the generator**: we only use SANY for parsing in this round.
 

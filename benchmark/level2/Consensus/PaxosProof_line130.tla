@@ -1,14 +1,6 @@
 -----------------MODULE PaxosProof_line130-------------------
 EXTENDS TLAPS, PaxosTuple
 
-WellFormedMessages == \A m \in msgs :
-    /\ m[1] = "1a" => m[2] \in Ballot
-    /\ m[1] = "1b" => /\ m[2] \in Acceptor
-                      /\ m[3] \in Ballot
-                      /\ m[4] \in Ballot \union {-1}
-                      /\ m[5] \in Value \union {None}
-    /\ m[1] = "2a" => m[2] \in Ballot /\ m[3] \in Value
-    /\ m[1] = "2b" => m[2] \in Acceptor /\ m[3] \in Ballot /\ m[4] \in Value
 -----------------------------------------------------------------------------
 
 -----------------------------------------------------------
@@ -35,17 +27,8 @@ StructOK4 == \A m \in msgs : m[1] = "2b" => /\ \E mo \in msgs : /\ mo[1] = "2a"
 StructOK5 == \A m \in msgs : m[1] = "1b" => \A d \in Ballot : m[4] < d /\ d < m[3] =>
                                             \A v \in Value : ~ <<d,v>> \in votes[m[2]]
 
-StructOK == /\ TypeOK 
-            /\ StructOK1 
-            /\ StructOK2 
-\*            /\ StructOK3 
-            /\ StructOK4 
-            /\ StructOK5 
-
-
 -----------------------------------------------------------------------------
 Inv == TypeOK /\ StructOK1 /\ StructOK2 /\ StructOK3 /\ StructOK4 /\ StructOK5
-
 
 ------------------------------------------------------------
 THEOREM Next /\ Inv => V!Next \/ UNCHANGED <<votes,maxBal>>

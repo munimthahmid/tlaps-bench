@@ -1,18 +1,27 @@
 #!/usr/bin/env python3
 """Generate Level 2 benchmarks from source .tla files.
 
-Core principle (from src/level2/design.md):
-  Keep the model and the statement of the top-level theorem;
-  delete all proof content.
+Core principle (strict L2, from src/dataset/level2/design.md, Issue #1/#3):
+  Keep only what is needed to STATE the top-level theorem; delete every
+  other definition, all other theorems/lemmas, all proof content, and all
+  comments. The AI must rediscover the inductive invariant and design the
+  proof structure from scratch.
 
 For each top-level THEOREM in source/<Module>/<File>.tla we emit one
 file benchmark/level2/<Module>/<File>_<TheoremName>.tla in which:
-  - The module + EXTENDS + CONSTANT/VARIABLE/ASSUME/AXIOM + all `==`
-    definitions are kept verbatim.
+  - The module + EXTENDS + CONSTANT/VARIABLE/ASSUME/AXIOM are kept.
+  - Only the `==` definitions / named INSTANCE bindings reachable from the
+    target theorem's STATEMENT (transitive closure over the definition-
+    dependency graph, seeded by the statement + kept ASSUME/AXIOM) survive;
+    unreachable ones (inductive invariants like `Inv`/`TypeOK`, helper
+    operators like `SafeAt`/`MsgInv`) are deleted as proof artifacts.
+    When the goal IS an invariant (`Spec => []Inv`), that invariant is in
+    the statement, so it is reachable and kept — the goal can't be hidden.
   - All other THEOREMs and all LEMMAs (statement + proof) are deleted.
   - The target THEOREM's proof body is replaced with `PROOF OBVIOUS`.
-  - INSTANCE-target .tla files are copied alongside with all their
-    proofs stripped (`PROOF OMITTED`).
+  - All comments (`\\*` line, `(* … *)` block) are stripped.
+  - Dep .tla files (EXTENDS, or kept INSTANCEs) are copied alongside with
+    their proofs stripped (`PROOF OMITTED`) and comments stripped.
 
 Top-level selection (OR rule, applied to THEOREM-keyword decls only):
   1. Unnamed rule: T has no name (TLA+ syntax can't reference it → standalone).
@@ -58,7 +67,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 
@@ -208,6 +216,104 @@ def target_theorem_name(theorem):
     return f"line{theorem['loc']['line_start']}", False
 
 
+def compute_reachable(dump, target_thm):
+    """Names of `==` definitions / INSTANCE bindings needed to STATE the target.
+
+    Seeds from the target theorem's statement references plus every kept
+    ASSUME/AXIOM (the model's hypotheses), then takes the transitive closure
+    over the definition-dependency graph (operator + instance `references`
+    emitted by the SANY dumper). Everything NOT in the returned set is a proof
+    artifact (inductive invariant, helper lemma/operator) and is stripped.
+
+    Note the target's *proof* references are deliberately excluded: the proof is
+    replaced by `PROOF OBVIOUS`, so any definition used only inside it is gone.
+    For `Spec => []Inv` targets, `Inv` is in the statement, so it (and its
+    decomposition) is reachable and kept — the goal cannot be hidden.
+    """
+    adj = {}
+    for o in dump['operators']:
+        adj.setdefault(o['name'], set()).update(o.get('references', []))
+    for i in dump['instances']:
+        if i.get('name'):
+            adj.setdefault(i['name'], set()).update(i.get('references', []))
+
+    seed = set(target_thm.get('statement_references', []))
+    for a in dump['assumes']:
+        seed.update(a.get('references', []))
+
+    reachable = set()
+    stack = list(seed)
+    while stack:
+        name = stack.pop()
+        if name in reachable:
+            continue
+        reachable.add(name)
+        stack.extend(r for r in adj.get(name, ()) if r not in reachable)
+    return reachable
+
+
+def strip_comments(text):
+    """Remove every TLA+ comment from `text`, preserving line structure.
+
+    Handles `\\*` line comments and nested `(* ... *)` block comments, and skips
+    comment markers that appear inside string literals. Newlines are always
+    preserved so source line geometry (and the `---- MODULE` / `====` lines)
+    survives. Stripping comments is what removes residual strategy hints — e.g.
+    EWD840's "Dijkstra's invariant" banner and the trailing "here is a more
+    detailed, hierarchical proof" note left over from a deleted proof.
+    """
+    out = []
+    i = 0
+    n = len(text)
+    depth = 0          # block-comment nesting depth
+    in_line = False    # inside a \* line comment
+    in_str = False     # inside a "..." string literal
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < n else ''
+        if in_line:
+            if c == '\n':
+                in_line = False
+                out.append(c)
+            i += 1
+        elif depth > 0:
+            if c == '(' and nxt == '*':
+                depth += 1
+                i += 2
+            elif c == '*' and nxt == ')':
+                depth -= 1
+                i += 2
+            elif c == '\n':
+                out.append(c)  # keep blank line where the comment sat
+                i += 1
+            else:
+                i += 1
+        elif in_str:
+            out.append(c)
+            if c == '\\' and nxt:
+                out.append(nxt)
+                i += 2
+            else:
+                if c == '"':
+                    in_str = False
+                i += 1
+        else:
+            if c == '\\' and nxt == '*':
+                in_line = True
+                i += 2
+            elif c == '(' and nxt == '*':
+                depth = 1
+                i += 2
+            elif c == '"':
+                in_str = True
+                out.append(c)
+                i += 1
+            else:
+                out.append(c)
+                i += 1
+    return ''.join(out)
+
+
 def apply_edits(lines, edits):
     """Apply (start_line, end_line, replacement_text) edits.
 
@@ -232,8 +338,18 @@ def apply_edits(lines, edits):
     return ''.join(out)
 
 
-def build_benchmark(source_lines, dump, target_thm, benchmark_module_name):
-    """Build the benchmark .tla text by editing source_lines."""
+def build_benchmark(source_lines, dump, target_thm, benchmark_module_name, reachable):
+    """Build the benchmark .tla text by editing source_lines.
+
+    Strict L2 (per Issue #1 / #3): keep only the model + target property + the
+    bare THEOREM statement; strip every proof artifact. Concretely we:
+      - replace the target theorem's proof body with `PROOF OBVIOUS`,
+      - delete all other THEOREM/LEMMA declarations,
+      - delete every `==` definition / named INSTANCE not in `reachable`
+        (the closure of definitions needed to state the goal) — this is what
+        removes the inductive invariant `Inv`, `TypeOK`, `MsgInv`, `SafeAt`, …,
+      - strip all comments, and tidy the resulting blank-line runs.
+    """
     edits = []
     target_id = id(target_thm)
     for t in dump['theorems']:
@@ -251,7 +367,22 @@ def build_benchmark(source_lines, dump, target_thm, benchmark_module_name):
             loc = t['loc']
             edits.append((loc['line_start'], loc['line_end'], ''))
 
+    # Delete operator definitions not reachable from the target statement —
+    # the inductive invariants and helper operators the AI must rediscover.
+    for o in dump['operators']:
+        if o['name'] not in reachable:
+            loc = o['loc']
+            edits.append((loc['line_start'], loc['line_end'], ''))
+    # Delete named INSTANCE bindings that aren't needed to state the goal.
+    # Unnamed (bare) INSTANCEs import names into scope unqualified and can't be
+    # tracked by reachability, so they are always kept.
+    for inst in dump['instances']:
+        if inst.get('name') and inst['name'] not in reachable:
+            loc = inst['loc']
+            edits.append((loc['line_start'], loc['line_end'], ''))
+
     text = apply_edits(source_lines, edits)
+    text = strip_comments(text)
 
     # Rename module header to the benchmark module name.
     out_lines = text.splitlines(keepends=True)
@@ -260,7 +391,12 @@ def build_benchmark(source_lines, dump, target_thm, benchmark_module_name):
         if m:
             out_lines[i] = f"{m.group(1)}{benchmark_module_name}{m.group(3)}\n"
             break
-    return ''.join(out_lines)
+    text = ''.join(out_lines)
+
+    # Collapse the blank-line runs left behind by deleted defs / stripped
+    # comments down to a single blank line.
+    text = re.sub(r'\n[ \t]*\n(?:[ \t]*\n)+', '\n\n', text)
+    return text
 
 
 def _gather_local_deps(start_mods, src_dir):
@@ -292,10 +428,16 @@ def _gather_local_deps(start_mods, src_dir):
     return out
 
 
-def copy_deps(dump, source_path, out_dir):
+def copy_deps(dump, source_path, out_dir, reachable):
     """Copy every local-module dep of `source_path` into `out_dir`, with all
     proofs stripped to PROOF OMITTED. Covers both EXTENDS (e.g. EuclidEx -> GCD)
     and INSTANCE (e.g. Paxos -> Consensus) references, transitively.
+
+    EXTENDS deps are always copied (the module is unconditionally in scope).
+    A *named* INSTANCE's dep is copied only if that instance binding survived
+    reachability stripping — e.g. Consensus.tla is needed by `Spec => C!Spec`
+    (Refinement) but not by `Spec => []Consistency` (Consistent), which drops
+    the `C` binding. Unnamed INSTANCEs are always copied (always kept).
 
     Returns the list of copied basenames.
     """
@@ -306,8 +448,12 @@ def copy_deps(dump, source_path, out_dir):
             direct_deps.append(ext)
     for inst in dump.get('instances', []):
         mod = inst.get('module')
-        if mod:
-            direct_deps.append(mod)
+        if not mod:
+            continue
+        name = inst.get('name')
+        if name and name not in reachable:
+            continue  # instance was stripped from the benchmark
+        direct_deps.append(mod)
 
     copied = []
     for mod, dep_path in _gather_local_deps(direct_deps, src_dir):
@@ -317,11 +463,14 @@ def copy_deps(dump, source_path, out_dir):
         dep_thms = parse_theorems(dep_lines)
         dest = os.path.join(out_dir, os.path.basename(dep_path))
         if dep_thms:
-            stripped = strip_all_proofs(dep_lines, dep_thms)
-            with open(dest, 'w', encoding='utf-8') as f:
-                f.write(stripped if stripped.endswith('\n') else stripped + '\n')
-        else:
-            shutil.copy2(dep_path, dest)
+            dep_text = strip_all_proofs(dep_lines, dep_thms)
+        # Scrub comments here too: a dependency module the AI can read (its
+        # THEOREM statements stay, only proofs become OMITTED) would otherwise
+        # leak strategy prose just like the main file.
+        dep_text = strip_comments(dep_text)
+        dep_text = re.sub(r'\n[ \t]*\n(?:[ \t]*\n)+', '\n\n', dep_text)
+        with open(dest, 'w', encoding='utf-8') as f:
+            f.write(dep_text if dep_text.endswith('\n') else dep_text + '\n')
         copied.append(os.path.basename(dep_path))
     return copied
 
@@ -513,10 +662,11 @@ def process_file(source_path, audit_writer, output_root, module_subdir=None,
         used_names.add(bench_module_name)
         bench_file = os.path.join(out_dir, f"{bench_module_name}.tla")
 
-        bench_text = build_benchmark(source_lines, dump, target_thm, bench_module_name)
+        reachable = compute_reachable(dump, target_thm)
+        bench_text = build_benchmark(source_lines, dump, target_thm, bench_module_name, reachable)
         with open(bench_file, 'w', encoding='utf-8') as f:
             f.write(bench_text)
-        copy_deps(dump, source_path, out_dir)
+        copy_deps(dump, source_path, out_dir, reachable)
         count += 1
         if generated_paths is not None:
             generated_paths.append(bench_file)

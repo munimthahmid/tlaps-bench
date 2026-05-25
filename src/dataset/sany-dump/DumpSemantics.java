@@ -86,6 +86,23 @@ public class DumpSemantics {
       if (us != null) moduleTheoremNames.add(us.toString());
     }
 
+    // Build the set of names that the L2 reachability pass can keep: in-module
+    // operator definitions plus INSTANCE bindings. A reference to any of these
+    // from the target theorem's statement (transitively) marks the definition
+    // as "needed to state the goal", so it survives stripping; everything else
+    // (inductive invariants, helper lemmas) is a proof artifact and is removed.
+    Set<String> moduleDefNames = new LinkedHashSet<>();
+    for (OpDefNode op : m.getOpDefs()) {
+      if (!isFromFile(op, moduleFile)) continue;
+      if (op.getSource() != op) continue;
+      moduleDefNames.add(op.getName().toString());
+    }
+    for (InstanceNode inst : m.getInstances()) {
+      if (!isFromFile(inst, moduleFile)) continue;
+      UniqueString instName = inst.getName();
+      if (instName != null) moduleDefNames.add(instName.toString());
+    }
+
     JsonBuilder j = new JsonBuilder();
     j.openObject();
     j.field("module", m.getName().toString());
@@ -137,6 +154,7 @@ public class DumpSemantics {
       j.field("name", a.getDef() == null ? null : a.getDef().getName().toString());
       j.field("is_axiom", a.getIsAxiom());
       emitLoc(j, a);
+      emitRefs(j, a, moduleDefNames);
       j.closeObject();
     }
     j.closeArray();
@@ -151,6 +169,10 @@ public class DumpSemantics {
       ModuleNode target = inst.getModule();
       j.field("module", target == null ? null : target.getName().toString());
       emitLoc(j, inst);
+      // References from the WITH substitution expressions: keeping a reachable
+      // INSTANCE binding (e.g. for `Spec => C!Spec`) requires keeping every
+      // local operator it substitutes in.
+      emitRefs(j, inst, moduleDefNames);
       j.closeObject();
     }
     j.closeArray();
@@ -166,6 +188,12 @@ public class DumpSemantics {
       j.field("is_spec_formula", specFormulas.contains(op.getName().toString()));
       String bodyKind = classifyBody(op.getBody(), specFormulas);
       j.field("body_kind", bodyKind);
+      // References from the body: the edges of the definition-dependency graph
+      // the L2 reachability pass walks. Includes params' default exprs etc. via
+      // the generic child walk.
+      Set<String> refs = new LinkedHashSet<>();
+      collectOpRefs(op.getBody(), refs, moduleDefNames);
+      emitRefArray(j, refs);
       j.closeObject();
     }
     j.closeArray();
@@ -178,7 +206,7 @@ public class DumpSemantics {
     j.openArrayField("theorems");
     for (TheoremNode t : m.getTheorems()) {
       if (!isFromFile(t, moduleFile)) continue;
-      emitTheorem(j, t, specFormulas, moduleTheoremNames);
+      emitTheorem(j, t, specFormulas, moduleTheoremNames, moduleDefNames);
     }
     j.closeArray();
 
@@ -189,7 +217,8 @@ public class DumpSemantics {
   // ----- theorem emission --------------------------------------------------
 
   static void emitTheorem(JsonBuilder j, TheoremNode t,
-                          Set<String> specFormulas, Set<String> moduleTheoremNames) {
+                          Set<String> specFormulas, Set<String> moduleTheoremNames,
+                          Set<String> moduleDefNames) {
     j.openObject();
     UniqueString us = t.getName();
     j.field("name", us == null ? null : us.toString());
@@ -222,6 +251,14 @@ public class DumpSemantics {
     if (proof != null) collectRefs(proof, refs, moduleTheoremNames);
     j.openArrayField("references");
     for (String r : refs) j.stringElem(r);
+    j.closeArray();
+    // statement_references: the operator/INSTANCE definitions the *statement*
+    // depends on. These seed the L2 reachability pass — only definitions
+    // reachable from here (transitively) are needed to state the goal.
+    Set<String> stmtRefs = new LinkedHashSet<>();
+    collectOpRefs(stmt, stmtRefs, moduleDefNames);
+    j.openArrayField("statement_references");
+    for (String r : stmtRefs) j.stringElem(r);
     j.closeArray();
     j.closeObject();
   }
@@ -285,7 +322,62 @@ public class DumpSemantics {
     return symbolName(app.getOperator());
   }
 
-  // ----- reference graph ---------------------------------------------------
+  // ----- definition-dependency graph (for L2 reachability) -----------------
+
+  /**
+   * Walk an arbitrary semantic subtree and collect the names of in-module
+   * operator / INSTANCE definitions it applies. This builds the edges of the
+   * definition-dependency graph the L2 generator uses to decide which `==`
+   * definitions are needed to state the goal (kept) versus pure proof
+   * artifacts (stripped).
+   *
+   * We record the name at each OpApplNode whose operator resolves to an
+   * in-module definition, then recurse over getChildren() so nested
+   * applications, LET/IN bodies, quantifier bodies, records, etc. are all
+   * covered. Bound variables and parameters are not in moduleDefNames, so they
+   * are naturally ignored.
+   */
+  static void collectOpRefs(SemanticNode n, Set<String> out, Set<String> moduleDefNames) {
+    if (n == null) return;
+    if (n instanceof OpApplNode) {
+      String nm = symbolName(((OpApplNode) n).getOperator());
+      if (nm != null) {
+        if (moduleDefNames.contains(nm)) out.add(nm);
+        // INSTANCE-qualified use (e.g. `C!Spec`): SANY names the operator with
+        // the `!` separator. Map it back to the local INSTANCE binding `C` so
+        // that keeping a refinement target like `Spec => C!Spec` also keeps the
+        // instance (and, transitively, its WITH substitution operators).
+        int bang = nm.indexOf('!');
+        if (bang > 0) {
+          String prefix = nm.substring(0, bang);
+          if (moduleDefNames.contains(prefix)) out.add(prefix);
+        }
+      }
+    }
+    SemanticNode[] kids;
+    try {
+      kids = n.getChildren();
+    } catch (Throwable t) {
+      kids = null;
+    }
+    if (kids != null) {
+      for (SemanticNode k : kids) collectOpRefs(k, out, moduleDefNames);
+    }
+  }
+
+  static void emitRefs(JsonBuilder j, SemanticNode n, Set<String> moduleDefNames) {
+    Set<String> refs = new LinkedHashSet<>();
+    collectOpRefs(n, refs, moduleDefNames);
+    emitRefArray(j, refs);
+  }
+
+  static void emitRefArray(JsonBuilder j, Set<String> refs) {
+    j.openArrayField("references");
+    for (String r : refs) j.stringElem(r);
+    j.closeArray();
+  }
+
+  // ----- theorem-use graph (BY/USE/DEFS, for top-level selection) ----------
 
   static void collectRefs(ProofNode p, Set<String> refs, Set<String> moduleTheoremNames) {
     if (p instanceof LeafProofNode) {
