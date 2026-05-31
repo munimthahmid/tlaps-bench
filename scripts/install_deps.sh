@@ -43,9 +43,9 @@ if [[ -x "${HOME}/.apalache/bin/apalache-mc" ]]; then
 else
   echo "[install_deps] downloading Apalache ${APALACHE_TAG}..."
   curl -fsSL -o "/tmp/${APALACHE_ASSET}" "${APALACHE_URL}"
-  rm -rf "${HOME}/.apalache"
-  tar -xzf "/tmp/${APALACHE_ASSET}" -C "${HOME}/"  # extracts to ~/apalache/
-  mv "${HOME}/apalache" "${HOME}/.apalache"
+  rm -rf "${HOME}/.apalache" "${HOME}/apalache-${APALACHE_VERSION}"
+  tar -xzf "/tmp/${APALACHE_ASSET}" -C "${HOME}/"  # extracts to ~/apalache-<version>/
+  mv "${HOME}/apalache-${APALACHE_VERSION}" "${HOME}/.apalache"
   rm -f "/tmp/${APALACHE_ASSET}"
 fi
 
