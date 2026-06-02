@@ -152,6 +152,32 @@ def find_tlapm_lib(tlapm_path):
     return None
 
 
+def find_community_lib(filepath):
+    """Find vendored CommunityModules (lib/community/), searching the file's
+    git repo root then ancestor dirs. Returns the path or None.
+
+    NOTE: this script is compiled to a standalone binary (see Makefile) and runs
+    inside the agent's workspace, so unlike validate.py it can't rely on a
+    repo-relative PROJECT_ROOT — it must discover lib/community/ at runtime."""
+    candidates = []
+    repo_root = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        cwd=os.path.dirname(filepath) or ".",
+    ).stdout.strip()
+    if repo_root:
+        candidates.append(os.path.join(repo_root, "lib", "community"))
+    d = os.path.dirname(os.path.abspath(filepath))
+    for _ in range(6):  # walk up a few levels as a fallback
+        candidates.append(os.path.join(d, "lib", "community"))
+        d = os.path.dirname(d)
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return None
+
+
 def get_main_version(filepath):
     """Get the file content from the main/master branch."""
     repo_root = subprocess.run(
@@ -339,7 +365,11 @@ def main():
             if dep_basename != basename:
                 shutil.copy2(dep_file, os.path.join(tmp_dir, dep_basename))
 
-        cmd = [tlapm_path, '-I', tlapm_lib, tmp_file]
+        cmd = [tlapm_path, "-I", tlapm_lib]
+        community_lib = find_community_lib(filepath)
+        if community_lib:
+            cmd += ["-I", community_lib]
+        cmd.append(tmp_file)
         try:
             out, err, rc = run_killgroup(cmd, args.timeout, tmp_dir)
             tlapm_output = out + err
@@ -358,11 +388,12 @@ def main():
         # Run --summary to detect missing proofs (e.g. bare QED)
         summary_output = ""
         if tlapm_passed:
+            summary_cmd = [tlapm_path, "-I", tlapm_lib]
+            if community_lib:
+                summary_cmd += ["-I", community_lib]
+            summary_cmd += ["--summary", tmp_file]
             try:
-                out, err, _ = run_killgroup(
-                    [tlapm_path, '-I', tlapm_lib, '--summary', tmp_file],
-                    30, tmp_dir,
-                )
+                out, err, _ = run_killgroup(summary_cmd, 30, tmp_dir)
                 summary_output = out + err
             except Exception:
                 pass
@@ -442,7 +473,7 @@ def main():
     elif tlapm_passed:
         verdict = "PASS"
         exit_code = 0
-        emit(f"  ✅ PASS — all obligations proved")
+        emit("  ✅ PASS — all obligations proved")
     else:
         verdict = "FAIL"
         exit_code = 1

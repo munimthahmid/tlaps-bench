@@ -17,13 +17,11 @@ import os
 import re
 import sys
 import glob
-import json
 import shutil
 import subprocess
 import argparse
 import tempfile
 import time
-from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Dict
@@ -33,10 +31,13 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_HERE, '..', 'dataset', 'level1'))
 from generate import (
-    parse_theorems, parse_module_name, find_tla_files,
-    STDLIB_MODULES, SOURCE_ROOT, BENCHMARK_DIR, PROJECT_ROOT,
-    find_source_dirs, build_dependency_graph, find_all_deps,
-    merge_files, parse_extends, parse_instances,
+    parse_theorems,
+    parse_module_name,
+    find_tla_files,
+    SOURCE_ROOT,
+    BENCHMARK_DIR,
+    PROJECT_ROOT,
+    find_source_dirs,
 )
 from cheating_detection import CheatingIssue
 
@@ -176,7 +177,11 @@ def port_proof_to_benchmark(benchmark_path: str, proof_lines: List[str]) -> str:
 def run_tlapm(tla_file: str, tlapm_path: str, tlapm_lib: str,
               timeout: int = 120) -> Tuple[int, str, float]:
     """Run tlapm on a TLA+ file. Returns (exit_code, output, elapsed_secs)."""
-    cmd = [tlapm_path, '-I', tlapm_lib, tla_file]
+    cmd = [tlapm_path, "-I", tlapm_lib]
+    community_lib = os.path.join(PROJECT_ROOT, "lib", "community")
+    if os.path.isdir(community_lib):
+        cmd += ["-I", community_lib]
+    cmd.append(tla_file)
     start = time.time()
     try:
         result = subprocess.run(
@@ -331,8 +336,8 @@ def generate_report(results: List[ValidationResult], output_path: str):
     lines.append("# TLAPS Benchmark Validation Report\n")
     lines.append(f"**Generated**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
     lines.append("## Summary\n")
-    lines.append(f"| Metric | Count |")
-    lines.append(f"|--------|-------|")
+    lines.append("| Metric | Count |")
+    lines.append("|--------|-------|")
     lines.append(f"| Total benchmarks | {total} |")
     lines.append(f"| ✅ Passed | {passed} |")
     lines.append(f"| ❌ Failed | {failed} |")
