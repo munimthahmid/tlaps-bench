@@ -242,19 +242,22 @@ def validate_single_benchmark(args_tuple):
     found_proof = None
 
     # First, try the primary source file matching the benchmark name
-    # Then fall back to searching all source files in the same module directory
+    # Then fall back to searching all source files in the same module directory.
+    # BOTH must be scoped to the benchmark's own top-level spec dir (module_dir):
+    # multiple specs can share a module basename (e.g. Consensus.tla exists in
+    # tlaplus_examples_Paxos, _PaxosHowToWinATuringAward and _byzpaxos, each with
+    # a THEOREM Invariance). Without this scope the matcher could port a
+    # same-named proof from a *different* spec
     candidates = []
     for source_basename, src_file in source_files:
+        rel = os.path.relpath(src_file, SOURCE_ROOT)
+        if rel.split(os.sep)[0] != module_dir:
+            continue
         src_basename_noext = os.path.splitext(os.path.basename(src_file))[0]
-
         if name_no_ext.startswith(src_basename_noext + '_'):
             candidates.insert(0, (source_basename, src_file))  # primary match first
         else:
-            # Check if source file is under the same top-level module directory
-            # e.g. source/Euclid/Euclid-Hyperbook/GCD.tla should match module_dir "Euclid"
-            rel = os.path.relpath(src_file, SOURCE_ROOT)
-            if rel.split(os.sep)[0] == module_dir:
-                candidates.append((source_basename, src_file))
+            candidates.append((source_basename, src_file))
 
     for source_basename, src_file in candidates:
         with open(src_file, 'r') as f:
