@@ -86,28 +86,47 @@ def module_name_of(tla_path: str) -> Optional[str]:
         return None
 
 
-def dump_normalized(tla_path: str, dep_dir: Optional[str] = None,
-                    timeout: int = 180) -> Module:
-    """Parse ``tla_path`` robustly, even when its filename != module name.
+def _as_dep_dirs(dep_dir, dep_dirs) -> list:
+    if dep_dirs:
+        return list(dep_dirs)
+    if dep_dir:
+        return [dep_dir]
+    return []
 
-    TLA+/SANY requires the file name to match the declared module name. Some
-    submissions are stored as ``solution.tla`` while declaring a different
-    module. We copy the file (and the sibling .tla dependencies from
-    ``dep_dir``, default = the file's own directory) into a temp dir, renaming
-    the target to ``<module>.tla`` so SANY accepts it and resolves deps.
+
+def dump_normalized(tla_path: str, dep_dir: Optional[str] = None,
+                    timeout: int = 180, dep_dirs: Optional[list] = None) -> Module:
+    """Parse ``tla_path`` robustly: correct filename + supply dependency modules.
+
+    Two real-world hurdles this clears:
+      * TLA+/SANY requires the file name to match the declared module name, but
+        submissions are often stored as ``solution.tla``.
+      * An archived result dir frequently keeps only ``benchmark.tla`` +
+        ``solution.tla`` and drops the dependency modules (Voting.tla,
+        PConProof.tla, ...). SANY then fails with "Cannot find source for
+        module X" — which looks like a parse failure but is just a missing dep.
+
+    We copy every ``*.tla`` from each ``dep_dirs`` entry (later entries win on
+    name clashes, so the submission's own copy overrides a canonical one) into a
+    temp dir, rename the target to ``<module>.tla``, and parse there. Pass both
+    the canonical ``benchmark/<level>/<module>/`` dir (for the given deps) and
+    the result dir (for the submission + any agent-created modules).
     """
     mod = module_name_of(tla_path)
-    src_dir = dep_dir or os.path.dirname(os.path.abspath(tla_path))
+    dirs = _as_dep_dirs(dep_dir, dep_dirs) or [os.path.dirname(os.path.abspath(tla_path))]
     base = os.path.basename(tla_path)
-    # Fast path: filename already matches module name -> no copy needed.
-    if mod is None or base == f"{mod}.tla":
+    # Fast path: filename matches AND a single dep dir == the file's own dir.
+    if mod and base == f"{mod}.tla" and len(dirs) == 1 and \
+            os.path.abspath(dirs[0]) == os.path.dirname(os.path.abspath(tla_path)):
         return dump(tla_path, timeout=timeout)
 
     tmp = tempfile.mkdtemp(prefix="tlacore_sany_")
     try:
-        for dep in glob.glob(os.path.join(src_dir, "*.tla")):
-            shutil.copy2(dep, os.path.join(tmp, os.path.basename(dep)))
-        target = os.path.join(tmp, f"{mod}.tla")
+        for d in dirs:
+            for dep in glob.glob(os.path.join(d, "*.tla")):
+                shutil.copy2(dep, os.path.join(tmp, os.path.basename(dep)))
+        target = os.path.join(tmp, f"{mod}.tla") if mod else \
+            os.path.join(tmp, base)
         shutil.copy2(tla_path, target)
         return dump(target, timeout=timeout)
     finally:
@@ -115,8 +134,10 @@ def dump_normalized(tla_path: str, dep_dir: Optional[str] = None,
 
 
 def try_dump_normalized(tla_path: str, dep_dir: Optional[str] = None,
-                        timeout: int = 180) -> Optional[Module]:
+                        timeout: int = 180,
+                        dep_dirs: Optional[list] = None) -> Optional[Module]:
     try:
-        return dump_normalized(tla_path, dep_dir=dep_dir, timeout=timeout)
+        return dump_normalized(tla_path, dep_dir=dep_dir, timeout=timeout,
+                               dep_dirs=dep_dirs)
     except (SanyError, subprocess.TimeoutExpired, OSError):
         return None

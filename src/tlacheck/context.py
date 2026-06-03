@@ -113,13 +113,16 @@ def build_context(solution_dir: str, target_name: str, *,
     sol_path = solution_file or os.path.join(solution_dir, target_name + ".tla")
     if not os.path.exists(sol_path):
         sol_path = os.path.join(solution_dir, "solution.tla")
-    # Parse normalized (handles solution.tla whose module name differs, and
-    # ensures sibling dependency modules are present for EXTENDS/INSTANCE).
-    solution = try_dump_normalized(sol_path, dep_dir=solution_dir)
+    # Dependency search dirs: the canonical benchmark dir supplies the GIVEN
+    # modules (archived result dirs often drop them, keeping only benchmark.tla
+    # + solution.tla); the result dir supplies the submission and any
+    # agent-created modules, and overrides on name clashes (later wins).
+    dep_dirs = [d for d in (benchmark_dir, solution_dir) if d]
+    solution = try_dump_normalized(sol_path, dep_dirs=dep_dirs)
     sany_ok = solution is not None
 
     base_path = os.path.join(solution_dir, "benchmark.tla")
-    baseline = (try_dump_normalized(base_path, dep_dir=solution_dir)
+    baseline = (try_dump_normalized(base_path, dep_dirs=dep_dirs)
                 if os.path.exists(base_path) else None)
 
     def _read(p):
@@ -133,7 +136,7 @@ def build_context(solution_dir: str, target_name: str, *,
     prov = classify(solution_dir, target_name, benchmark_dir=benchmark_dir)
     agent_modules: dict[str, Module] = {}
     for name, path in prov.agent_created.items():
-        m = try_dump(path)
+        m = try_dump_normalized(path, dep_dirs=dep_dirs)
         if m is not None:
             agent_modules[name] = m
 
