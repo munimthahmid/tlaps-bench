@@ -17,13 +17,11 @@ import os
 import re
 import sys
 import glob
-import json
 import shutil
 import subprocess
 import argparse
 import tempfile
 import time
-from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Dict
@@ -33,10 +31,14 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_HERE, '..', 'dataset', 'level1'))
 from generate import (
-    parse_theorems, parse_module_name, find_tla_files,
-    STDLIB_MODULES, SOURCE_ROOT, BENCHMARK_DIR, PROJECT_ROOT,
-    find_source_dirs, build_dependency_graph, find_all_deps,
-    merge_files, parse_extends, parse_instances,
+    parse_theorems,
+    parse_module_name,
+    find_tla_files,
+    get_theorem_proof_lines,
+    SOURCE_ROOT,
+    BENCHMARK_DIR,
+    PROJECT_ROOT,
+    find_source_dirs,
 )
 from cheating_detection import CheatingIssue
 
@@ -176,7 +178,11 @@ def port_proof_to_benchmark(benchmark_path: str, proof_lines: List[str]) -> str:
 def run_tlapm(tla_file: str, tlapm_path: str, tlapm_lib: str,
               timeout: int = 120) -> Tuple[int, str, float]:
     """Run tlapm on a TLA+ file. Returns (exit_code, output, elapsed_secs)."""
-    cmd = [tlapm_path, '-I', tlapm_lib, tla_file]
+    cmd = [tlapm_path, "-I", tlapm_lib]
+    community_lib = os.path.join(PROJECT_ROOT, "lib", "community")
+    if os.path.isdir(community_lib):
+        cmd += ["-I", community_lib]
+    cmd.append(tla_file)
     start = time.time()
     try:
         result = subprocess.run(
@@ -237,19 +243,22 @@ def validate_single_benchmark(args_tuple):
     found_proof = None
 
     # First, try the primary source file matching the benchmark name
-    # Then fall back to searching all source files in the same module directory
+    # Then fall back to searching all source files in the same module directory.
+    # BOTH must be scoped to the benchmark's own top-level spec dir (module_dir):
+    # multiple specs can share a module basename (e.g. Consensus.tla exists in
+    # tlaplus_examples_Paxos, _PaxosHowToWinATuringAward and _byzpaxos, each with
+    # a THEOREM Invariance). Without this scope the matcher could port a
+    # same-named proof from a *different* spec
     candidates = []
     for source_basename, src_file in source_files:
+        rel = os.path.relpath(src_file, SOURCE_ROOT)
+        if rel.split(os.sep)[0] != module_dir:
+            continue
         src_basename_noext = os.path.splitext(os.path.basename(src_file))[0]
-
         if name_no_ext.startswith(src_basename_noext + '_'):
             candidates.insert(0, (source_basename, src_file))  # primary match first
         else:
-            # Check if source file is under the same top-level module directory
-            # e.g. source/Euclid/Euclid-Hyperbook/GCD.tla should match module_dir "Euclid"
-            rel = os.path.relpath(src_file, SOURCE_ROOT)
-            if rel.split(os.sep)[0] == module_dir:
-                candidates.append((source_basename, src_file))
+            candidates.append((source_basename, src_file))
 
     for source_basename, src_file in candidates:
         with open(src_file, 'r') as f:
@@ -259,7 +268,9 @@ def validate_single_benchmark(args_tuple):
 
         for sthm in src_theorems:
             if sthm.name == target_thm_name and sthm.has_proof:
-                proof_lines = src_lines[sthm.proof_start:sthm.proof_end + 1]
+                # Use the proof-extraction helper (handles inline proofs like
+                # 'LEMMA Foo == x  BY DEF y' without re-declaring the theorem).
+                proof_lines = get_theorem_proof_lines(src_lines, sthm)
                 # Trim trailing empty lines and comment-only lines
                 while proof_lines and (not proof_lines[-1].strip() or proof_lines[-1].strip().startswith('(*')):
                     proof_lines.pop()
@@ -331,8 +342,8 @@ def generate_report(results: List[ValidationResult], output_path: str):
     lines.append("# TLAPS Benchmark Validation Report\n")
     lines.append(f"**Generated**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
     lines.append("## Summary\n")
-    lines.append(f"| Metric | Count |")
-    lines.append(f"|--------|-------|")
+    lines.append("| Metric | Count |")
+    lines.append("|--------|-------|")
     lines.append(f"| Total benchmarks | {total} |")
     lines.append(f"| ✅ Passed | {passed} |")
     lines.append(f"| ❌ Failed | {failed} |")

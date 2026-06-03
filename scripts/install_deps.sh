@@ -22,6 +22,9 @@ APALACHE_URL="https://github.com/apalache-mc/apalache/releases/download/${APALAC
 TLATOOLS_TAG="v1.8.0"
 TLATOOLS_URL="https://github.com/tlaplus/tlaplus/releases/download/${TLATOOLS_TAG}/tla2tools.jar"
 
+COMMUNITY_TAG="202604221529"
+COMMUNITY_URL="https://github.com/tlaplus/CommunityModules/archive/refs/tags/${COMMUNITY_TAG}.tar.gz"
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB_DIR="${REPO_ROOT}/lib"
 
@@ -43,9 +46,9 @@ if [[ -x "${HOME}/.apalache/bin/apalache-mc" ]]; then
 else
   echo "[install_deps] downloading Apalache ${APALACHE_TAG}..."
   curl -fsSL -o "/tmp/${APALACHE_ASSET}" "${APALACHE_URL}"
-  rm -rf "${HOME}/.apalache"
-  tar -xzf "/tmp/${APALACHE_ASSET}" -C "${HOME}/"  # extracts to ~/apalache/
-  mv "${HOME}/apalache" "${HOME}/.apalache"
+  rm -rf "${HOME}/.apalache" "${HOME}/apalache-${APALACHE_VERSION}"
+  tar -xzf "/tmp/${APALACHE_ASSET}" -C "${HOME}/"  # extracts to ~/apalache-<version>/
+  mv "${HOME}/apalache-${APALACHE_VERSION}" "${HOME}/.apalache"
   rm -f "/tmp/${APALACHE_ASSET}"
 fi
 
@@ -56,6 +59,19 @@ if [[ -f "${LIB_DIR}/tla2tools.jar" ]]; then
 else
   echo "[install_deps] downloading tla2tools.jar ${TLATOOLS_TAG}..."
   curl -fsSL -o "${LIB_DIR}/tla2tools.jar" "${TLATOOLS_URL}"
+fi
+
+# --- CommunityModules (.tla) ---
+if [[ -f "${LIB_DIR}/community/SequencesExt.tla" ]]; then
+  echo "[install_deps] CommunityModules already at lib/community/ — skipping"
+else
+  echo "[install_deps] downloading CommunityModules ${COMMUNITY_TAG}..."
+  CM_TMP="$(mktemp -d)"
+  curl -fsSL -o "${CM_TMP}/community.tar.gz" "${COMMUNITY_URL}"
+  tar -xzf "${CM_TMP}/community.tar.gz" -C "${CM_TMP}/"
+  mkdir -p "${LIB_DIR}/community"
+  cp "${CM_TMP}/CommunityModules-${COMMUNITY_TAG}/modules/"*.tla "${LIB_DIR}/community/"
+  rm -rf "${CM_TMP}"
 fi
 
 echo "[install_deps] done."

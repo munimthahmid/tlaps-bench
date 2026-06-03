@@ -13,19 +13,70 @@ generate a standalone .tla file where:
 
 import os
 import re
-import sys
 import glob
-from collections import defaultdict
-from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Set
 
-# Standard TLA+ library modules (should NOT be merged)
+# Modules that tlapm resolves via an -I path, so they should NOT be merged/copied
+# as local dependency modules. Two groups:
+#   STDLIB_MODULES    — bundled with tlapm 1.6 (~/.tlapm/lib/tlapm/stdlib)
+#   COMMUNITY_MODULES — vendored CommunityModules in lib/community/ (added to the
+#                       tlapm -I path by install_deps.sh + validate.py/check_proof.py)
+# RESOLVABLE_MODULES (the union) is the single source of truth used by this
+# generator AND imported by validate.py and scripts/import_tlaps_example.py.
 STDLIB_MODULES = {
-    'TLAPS', 'Integers', 'Naturals', 'Sequences', 'FiniteSets', 'Reals',
-    'Bags', 'TLC', 'NaturalsInduction', 'SequenceTheorems',
-    'WellFoundedInduction', 'ProtoReals', 'Functions', 'SequenceOpTheorems',
-    'BagsTheorems', 'RealNumberTheorems', 'TLAPS',
+    "TLAPS",
+    "Integers",
+    "Naturals",
+    "Sequences",
+    "FiniteSets",
+    "Reals",
+    "Bags",
+    "TLC",
+    "NaturalsInduction",
+    "SequenceTheorems",
+    "WellFoundedInduction",
+    "ProtoReals",
+    "Functions",
+    "SequenceOpTheorems",
+    "BagsTheorems",
+    "RealNumberTheorems",
+    # tlapm 1.6 also bundles these theorem libraries (e.g. Majority's proof needs
+    # FiniteSetTheorems' FS_*).
+    "FiniteSetTheorems",
+    "FunctionTheorems",
+    "Folds",
+    "FiniteSetTheorems_proofs",
+    "SequenceTheorems_proofs",
+    "NaturalsInduction_proofs",
+    "WellFoundedInduction_proofs",
+    "BagsTheorems_proofs",
+    "RealTime",
 }
+
+# Vendored CommunityModules (lib/community/).
+COMMUNITY_MODULES = {
+    "SequencesExt",
+    "SequencesExtTheorems",
+    "FiniteSetsExt",
+    "FunctionsExt",
+    "BagsExt",
+    "Relation",
+    "Graphs",
+    "GraphsExt",
+    "Combinatorics",
+    "DyadicRationals",
+    "Bitwise",
+    "Statistics",
+    "VectorClocks",
+    "IOUtils",
+    "CSV",
+    "SVG",
+    "TLCExt",
+    "Json",
+    "Randomization",
+}
+
+# Everything tlapm resolves without copying.
+RESOLVABLE_MODULES = STDLIB_MODULES | COMMUNITY_MODULES
 
 # Directories to process (top-level module dirs).
 # File lives at <repo>/src/dataset/level1/generate.py; ascend three levels for the repo root.
@@ -64,11 +115,33 @@ def parse_module_name(content):
 
 
 def parse_extends(content):
-    """Extract EXTENDS modules from TLA+ content."""
-    m = re.search(r'^EXTENDS\s+(.+)$', content, re.MULTILINE)
-    if not m:
-        return []
-    return [x.strip() for x in m.group(1).split(',')]
+    """Extract EXTENDS modules from TLA+ content.
+
+    Handles `\\*` line comments (e.g. tlaplus_examples_glowingRaccoon's
+    `EXTENDS Naturals \\* an import`) and multi-line EXTENDS that wraps onto
+    indented continuation lines (e.g. tlaplus_examples_allocator's
+    SchedulingAllocator_proof).
+    """
+    lines = content.split("\n")
+    for i, line in enumerate(lines):
+        m = re.match(r"^EXTENDS\s+(.+)$", line)
+        if not m:
+            continue
+        parts = []
+        cur = m.group(1)
+        j = i
+        while True:
+            code = re.split(r"\\\*", cur)[0]  # drop trailing line comment
+            parts.append(code)
+            if code.rstrip().endswith(","):
+                j += 1
+                if j < len(lines):
+                    cur = lines[j]
+                    continue
+            break
+        joined = " ".join(parts)
+        return [x.strip() for x in joined.split(",") if x.strip()]
+    return []
 
 
 def parse_instances(content):
@@ -77,7 +150,7 @@ def parse_instances(content):
     for m in re.finditer(r'(?:(\w+)\s*==\s*)?INSTANCE\s+(\w+)', content):
         alias = m.group(1)
         mod = m.group(2)
-        if mod not in STDLIB_MODULES:
+        if mod not in RESOLVABLE_MODULES:
             instances.append((alias, mod))
     return instances
 
@@ -86,7 +159,7 @@ def get_local_dependencies(content, available_modules):
     """Get set of local module names this content depends on."""
     deps = set()
     for ext in parse_extends(content):
-        if ext in available_modules and ext not in STDLIB_MODULES:
+        if ext in available_modules and ext not in RESOLVABLE_MODULES:
             deps.add(ext)
     for _, mod in parse_instances(content):
         if mod in available_modules:
@@ -98,7 +171,7 @@ def get_extends_dependencies(content, available_modules):
     """Get set of local module names this content EXTENDS (safe to merge)."""
     deps = set()
     for ext in parse_extends(content):
-        if ext in available_modules and ext not in STDLIB_MODULES:
+        if ext in available_modules and ext not in RESOLVABLE_MODULES:
             deps.add(ext)
     return deps
 
@@ -471,6 +544,24 @@ def get_theorem_statement_lines(lines, thm):
     return result
 
 
+def get_theorem_proof_lines(lines, thm):
+    """Dual of get_theorem_statement_lines: return a theorem's proof body lines.
+
+    For an inline proof (proof on the same line as the declaration, e.g.
+    'LEMMA Foo == x  BY DEF y'), return only the proof tail (['BY DEF y'])
+    rather than the whole declaration line -- otherwise porting the proof into
+    a benchmark re-declares the theorem and produces a malformed module. For a
+    multi-line proof, return lines[proof_start:proof_end+1] verbatim.
+    """
+    if thm.proof_start is None or not thm.has_proof:
+        return []
+    if thm.proof_start == thm.statement_start:
+        line = lines[thm.statement_start]
+        m = re.search(r'\s+(PROOF\s+BY\b.*|BY\b.*)$', line)
+        return [m.group(1)] if m else [line]
+    return lines[thm.proof_start:thm.proof_end + 1]
+
+
 def merge_files(files_by_module, dep_graph, target_module):
     """Merge all dependencies of target_module into a single content string.
 
@@ -497,9 +588,9 @@ def merge_files(files_by_module, dep_graph, target_module):
 
         mod_lines = content.split('\n')
 
-        # Collect stdlib extends
+        # Collect resolvable extends
         for ext in parse_extends(content):
-            if ext in STDLIB_MODULES:
+            if ext in RESOLVABLE_MODULES:
                 all_extends.add(ext)
 
         # Extract body (between MODULE header and ending ====)
@@ -518,12 +609,23 @@ def merge_files(files_by_module, dep_graph, target_module):
 
         body = mod_lines[body_start:body_end]
 
-        # Remove EXTENDS line from body (we'll put a unified one)
+        # Remove EXTENDS line(s) from body (we'll put a unified one). Skip the
+        # EXTENDS line and any continuation lines of a multi-line EXTENDS, whose
+        # wrapped 2nd line would otherwise be orphaned and cause a parse error
+        # (e.g. tlaplus_examples_allocator's SchedulingAllocator_proof).
         filtered_body = []
+        in_extends = False
         for line in body:
-            if re.match(r'^EXTENDS\s', line.strip()):
+            if in_extends:
+                # still consuming continuation lines of a multi-line EXTENDS;
+                # stop after a line whose code part lacks a trailing comma
+                code = re.split(r"\\\*", line)[0].rstrip()
+                in_extends = code.endswith(",")
                 continue
-            # Remove EXTENDS-based local module references only (not INSTANCE)
+            if re.match(r'^EXTENDS\s', line.strip()):
+                code = re.split(r"\\\*", line)[0].rstrip()
+                in_extends = code.endswith(",")  # multi-line if trailing comma
+                continue
             filtered_body.append(line)
 
         if mod != target_module:
@@ -537,7 +639,7 @@ def merge_files(files_by_module, dep_graph, target_module):
     extends_str = ', '.join(sorted(all_extends)) if all_extends else ''
 
     # We'll use a placeholder module name; caller will set it
-    header_lines.append(f'---- MODULE __PLACEHOLDER__ ----')
+    header_lines.append("---- MODULE __PLACEHOLDER__ ----")
     if extends_str:
         header_lines.append(f'EXTENDS {extends_str}')
 
@@ -824,6 +926,15 @@ def process_module_dir(module_dir_name):
                         get_all_file_deps(inst_mod, files_by_module, files_to_copy)
         # Remove any extends deps from files_to_copy (they'll be merged)
         files_to_copy -= all_extends_deps
+
+        # A copied dep file keeps its own EXTENDS/INSTANCE clauses, so close
+        # files_to_copy under transitive deps — otherwise a merged-only module
+        # that a copied dep file references is absent (e.g. tlaplus_examples_
+        # MisraReachability copies Reachable but it EXTENDS Reachability).
+        copy_closure = set(files_to_copy)
+        for cf in list(files_to_copy):
+            get_all_file_deps(cf, files_by_module, copy_closure)
+        files_to_copy = copy_closure
 
         # Merge only EXTENDS dependencies
         if all_extends_deps:
