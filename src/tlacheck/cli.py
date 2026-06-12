@@ -20,7 +20,7 @@ import os
 import sys
 
 from .context import build_context
-from .engine import run_rules, STATIC_RULES
+from .engine import run_rules
 from .rules import incomplete_proof
 from .issue import Severity
 
