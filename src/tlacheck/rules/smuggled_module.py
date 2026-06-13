@@ -52,9 +52,42 @@ def _is_obvious(source: str, loc) -> bool:
     return txt.upper() == "OBVIOUS"
 
 
+def _reachable_agent_modules(ctx: CheckContext) -> set[str]:
+    """Agent modules transitively pulled in by the solution via EXTENDS/INSTANCE.
+
+    tlapm only loads a module reachable from the file it verifies; a theorem in
+    an unreferenced module is never trusted as a fact and cannot be cited, so it
+    cannot smuggle anything. Agents routinely leave *scratch* modules in the
+    workspace (test1.tla, test2.tla — experimental copies of the spec) that the
+    final solution never EXTENDS; flagging those would be a false positive. We
+    therefore restrict to the reachable closure, walking the solution and other
+    agent modules (a given/baseline module cannot reference an agent module —
+    it predates the agent).
+    """
+    agent = ctx.agent_modules
+    if ctx.solution is None:
+        # Can't compute reachability without the parsed solution; be conservative
+        # and treat every agent module as reachable. (In the real pipeline this
+        # rule only runs when SANY parsed the solution, so this is the test path.)
+        return set(agent)
+    reachable: set[str] = set()
+    frontier = list(ctx.solution.referenced_modules)
+    while frontier:
+        name = frontier.pop()
+        if name in reachable or name not in agent:
+            continue
+        reachable.add(name)
+        frontier.extend(agent[name].referenced_modules)
+    return reachable
+
+
 def check(ctx: CheckContext) -> list[Issue]:
     issues: list[Issue] = []
+    reachable = _reachable_agent_modules(ctx)
     for mod_name, module in ctx.agent_modules.items():
+        if mod_name not in reachable:
+            continue  # scratch module the solution never imports — tlapm ignores it
+
         src_path = ctx.provenance.agent_created.get(mod_name)
         source = ""
         if src_path:

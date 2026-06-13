@@ -41,6 +41,42 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..'))
 
 
+def run_tlacheck_gate(result_dir, target_name, benchmark_dir, *, tlapm_passed=True):
+    """SANY-based cheat gate — the authoritative cheating check.
+
+    The compiled ``check_proof_bin`` runs only the legacy regex / ``--summary``
+    checks in ``cheating_detection.py``, which miss a whole class of cheats: a
+    proofless helper theorem (``THEOREM X == <goal>`` with no proof, admitted as
+    an axiom) cited by the target's ``BY X``, and smuggled auxiliary modules.
+    The ``tlacheck`` library (SANY semantic model, with a ``tlapm --summary``
+    fallback when SANY is stricter than tlapm) catches these. We run it here, on
+    the host where Java/SANY is available, and let a CHEATING finding override a
+    binary PASS.
+
+    Returns ``(is_cheating, detail)``. On ANY internal error returns
+    ``(False, "<reason>")`` so the gate never spuriously fails a run — the binary
+    verdict (which still carries the cheap checks) stands.
+    """
+    src = os.path.join(REPO_ROOT, 'src')
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    try:
+        from tlacheck.context import build_context
+        from tlacheck.engine import evaluate
+    except Exception as e:
+        return False, f"tlacheck import failed: {e}"
+    try:
+        ctx = build_context(result_dir, target_name, benchmark_dir=benchmark_dir,
+                            tlapm_passed=tlapm_passed, tlapm_fallback=True)
+        res = evaluate(ctx)
+    except Exception as e:
+        return False, f"tlacheck error: {e}"
+    cheating = res.cheating_issues
+    if cheating:
+        return True, "; ".join(str(i) for i in cheating)
+    return False, ""
+
+
 def resolve_paths():
     """Return (benchmark_root, checker_binary) based on environment.
 
@@ -570,6 +606,19 @@ def run_single_benchmark(item: WorkItem):
         except Exception as e:
             result['check_verdict'] = 'ERROR'
             result['error'] = str(e)
+
+        # SANY-based cheat gate (authoritative). Only a binary PASS can hide a
+        # cheat that tlapm "proved" — run tlacheck and downgrade PASS->CHEATING
+        # if it finds a proofless-helper axiom or smuggled module the legacy
+        # checker missed.
+        if result['check_verdict'] == 'PASS':
+            is_cheat, detail = run_tlacheck_gate(
+                result_dir, name_no_ext, os.path.dirname(item.benchmark_path))
+            with open(os.path.join(result_dir, 'tlacheck.txt'), 'w') as f:
+                f.write(f"cheating: {is_cheat}\n{detail}\n")
+            if is_cheat:
+                result['check_verdict'] = 'CHEATING'
+                result['tlacheck'] = detail
 
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
