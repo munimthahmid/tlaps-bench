@@ -5,10 +5,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from typing import Optional, Tuple
 
 from .base import AgentBackend
-
 
 DEFAULT_MODEL = "claude-opus-4.8"
 
@@ -16,7 +14,7 @@ DEFAULT_MODEL = "claude-opus-4.8"
 class CopilotBackend(AgentBackend):
     name = "copilot"
 
-    def __init__(self, model: Optional[str] = None):
+    def __init__(self, model: str | None = None):
         self.model = model or DEFAULT_MODEL
 
     def build_command(self, workspace: str, result_dir: str) -> list[str]:
@@ -38,34 +36,47 @@ class CopilotBackend(AgentBackend):
         return [
             "copilot",
             "--allow-all",
-            "-C", workspace,
-            "--output-format", "json",
-            "--model", self.model,
-            "--effort", "max",
-            "--log-level", "none",
+            "-C",
+            workspace,
+            "--output-format",
+            "json",
+            "--model",
+            self.model,
+            "--effort",
+            "max",
+            "--log-level",
+            "none",
             "--no-color",
             "--disable-builtin-mcps",
             "--no-custom-instructions",
             "--no-auto-update",
         ]
 
-    def check_auth(self) -> Optional[str]:
+    def check_auth(self) -> str | None:
         # Fast path: a token env var is set (headless auth).
         # Checked by the CLI in this order: COPILOT_GITHUB_TOKEN, GH_TOKEN,
         # GITHUB_TOKEN.
-        if (os.environ.get("COPILOT_GITHUB_TOKEN")
-                or os.environ.get("GH_TOKEN")
-                or os.environ.get("GITHUB_TOKEN")):
+        if os.environ.get("COPILOT_GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
             return None
         # Slow path: probe the CLI with a trivial prompt. This covers OAuth
         # (`copilot login`) / credential-store auth that env-var checks can't
         # see. --disable-builtin-mcps keeps the probe fast and offline-safe.
         try:
             r = subprocess.run(
-                ["copilot", "--allow-all", "--disable-builtin-mcps",
-                 "--no-color", "--no-auto-update",
-                 "--output-format", "text", "-p", "ok"],
-                capture_output=True, text=True, timeout=60,
+                [
+                    "copilot",
+                    "--allow-all",
+                    "--disable-builtin-mcps",
+                    "--no-color",
+                    "--no-auto-update",
+                    "--output-format",
+                    "text",
+                    "-p",
+                    "ok",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             if r.returncode == 0:
                 return None
@@ -86,12 +97,12 @@ class CopilotBackend(AgentBackend):
         # host varies by plan, so allow all three; --no-auto-update means the
         # CLI never needs api.github.com for a release check.
         return [
-            "api.githubcopilot.com",            # individual / pro
-            "api.business.githubcopilot.com",   # business
+            "api.githubcopilot.com",  # individual / pro
+            "api.business.githubcopilot.com",  # business
             "api.enterprise.githubcopilot.com",  # enterprise
         ]
 
-    def parse_output(self, jsonl_path: str) -> Tuple[str, int, int]:
+    def parse_output(self, jsonl_path: str) -> tuple[str, int, int]:
         lines: list[str] = []
         in_tok = 0
         out_tok = 0
@@ -99,7 +110,7 @@ class CopilotBackend(AgentBackend):
         tool_names: dict[str, str] = {}
 
         try:
-            with open(jsonl_path, "r") as f:
+            with open(jsonl_path) as f:
                 for raw in f:
                     raw = raw.strip()
                     if not raw:

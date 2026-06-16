@@ -17,17 +17,14 @@ import glob
 import os
 import re
 from abc import ABC
-from typing import Optional
-
 
 # A top-level proof goal — `THEOREM`/`LEMMA`/`COROLLARY`/`PROPOSITION` at the
 # start of a logical line (optionally named). This is what makes a file a
 # benchmark to be proved, as opposed to a shared model / dependency layer.
-_TOP_LEVEL_GOAL = re.compile(r'^[ \t]*(THEOREM|LEMMA|COROLLARY|PROPOSITION)\b',
-                             re.MULTILINE)
+_TOP_LEVEL_GOAL = re.compile(r"^[ \t]*(THEOREM|LEMMA|COROLLARY|PROPOSITION)\b", re.MULTILINE)
 
 
-class Level(ABC):
+class Level(ABC):  # noqa: B024 - ABC used as a non-instantiable base marker; subclasses set class attrs
     name: str = ""
     level_number: int = 0
     description: str = ""
@@ -65,29 +62,27 @@ class Level(ABC):
         BOTH so the model file is treated as a dependency, not run as a task.
         """
         name = os.path.splitext(os.path.basename(path))[0]
-        if '_' not in name:
+        if "_" not in name:
             return False
         try:
-            with open(path, 'r') as f:
+            with open(path) as f:
                 text = f.read()
         except OSError:
             return False
         return _TOP_LEVEL_GOAL.search(text) is not None
 
-    def get_benchmark_files(self, filter_pattern: Optional[str] = None) -> list[str]:
-        files = sorted(
-            glob.glob(os.path.join(self.benchmark_dir(), '**', '*.tla'), recursive=True)
-        )
+    def get_benchmark_files(self, filter_pattern: str | None = None) -> list[str]:
+        files = sorted(glob.glob(os.path.join(self.benchmark_dir(), "**", "*.tla"), recursive=True))
         files = [f for f in files if self.is_benchmark_file(f)]
         if filter_pattern:
-            patterns = [p.strip() for p in filter_pattern.split(',')]
+            patterns = [p.strip() for p in filter_pattern.split(",")]
             files = [f for f in files if any(p in f for p in patterns)]
         return files
 
     def get_dependencies(self, benchmark_path: str) -> list[str]:
         bench_dir = os.path.dirname(benchmark_path)
         deps = []
-        for f in glob.glob(os.path.join(bench_dir, '*.tla')):
+        for f in glob.glob(os.path.join(bench_dir, "*.tla")):
             if os.path.abspath(f) == os.path.abspath(benchmark_path):
                 continue
             if not self.is_benchmark_file(f):
@@ -97,12 +92,12 @@ class Level(ABC):
     def prompt_template_path(self) -> str:
         prompts_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            'prompts',
+            "prompts",
         )
-        return os.path.join(prompts_dir, f'{self.name}.txt')
+        return os.path.join(prompts_dir, f"{self.name}.txt")
 
     def build_prompt(self, benchmark_basename: str, tlapm_path: str, tlapm_lib: str) -> str:
-        with open(self.prompt_template_path(), 'r') as f:
+        with open(self.prompt_template_path()) as f:
             template = f.read()
         return template.format(
             benchmark_basename=benchmark_basename,
@@ -110,19 +105,22 @@ class Level(ABC):
             tlapm_lib=tlapm_lib,
         )
 
-    def checker_command(self, workspace: str, benchmark_basename: str,
-                        output_path: str, timeout: int,
-                        benchmark_dir: str | None = None) -> list[str]:
+    def checker_command(
+        self, workspace: str, benchmark_basename: str, output_path: str, timeout: int, benchmark_dir: str | None = None
+    ) -> list[str]:
         cmd = [
             self._checker_binary,
             os.path.join(workspace, benchmark_basename),
-            '--level', str(self.level_number),
-            '--output', output_path,
-            '--timeout', str(timeout),
+            "--level",
+            str(self.level_number),
+            "--output",
+            output_path,
+            "--timeout",
+            str(timeout),
         ]
         # Grading passes the canonical read-only module dir so the semantic
         # engine's provenance is tamper-proof (the agent's own self-check falls
         # back to git-root reconstruction inside its workspace).
         if benchmark_dir:
-            cmd += ['--benchmark-dir', benchmark_dir]
+            cmd += ["--benchmark-dir", benchmark_dir]
         return cmd
