@@ -364,10 +364,7 @@ def parse_theorems(lines):
                 continue
 
         keyword = m.group(1)
-        if '==' not in line:
-            name = f'__unnamed_{i}'
-        else:
-            name = m.group(2)
+        name = f"__unnamed_{i}" if "==" not in line else m.group(2)
         stmt_start = i
 
         # Scan forward to find where the proof starts (or where the theorem ends)
@@ -707,8 +704,6 @@ def generate_benchmark_file(lines_or_content, theorems, target_idx, module_name,
     else:
         lines = [l.rstrip('\n') for l in lines_or_content]
 
-    target_thm = theorems[target_idx]
-
     # We'll rebuild the file by going through lines and replacing theorem sections
     result = []
 
@@ -873,7 +868,7 @@ def process_module_dir(module_dir_name):
             files_by_module[mod_name] = f
 
     # Build dependency graph
-    dep_graph = build_dependency_graph(files_by_module)
+    build_dependency_graph(files_by_module)
     available = set(files_by_module.keys())
 
     benchmark_count = 0

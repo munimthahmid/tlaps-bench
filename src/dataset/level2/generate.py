@@ -178,10 +178,7 @@ def _statement_text(target_thm, source_lines):
     """
     loc = target_thm['loc']
     ploc = target_thm.get('proof_loc')
-    if ploc and ploc.get('line_start', -1) > 0:
-        end_line = ploc['line_start'] - 1
-    else:
-        end_line = loc['line_end']
+    end_line = ploc['line_start'] - 1 if ploc and ploc.get('line_start', -1) > 0 else loc['line_end']
     return ''.join(source_lines[loc['line_start'] - 1 : end_line]).strip()
 
 
@@ -857,10 +854,7 @@ def process_file(source_path, audit_writer, output_root, module_subdir=None,
         names = []
         for t, unnamed, shp, grph in top_level:
             label = t['name'] or f"<unnamed L{t['loc']['line_start']}>"
-            if unnamed:
-                tag = "[unnamed]"
-            else:
-                tag = f"[shape={'Y' if shp else 'N'}/graph={'Y' if grph else 'N'}]"
+            tag = "[unnamed]" if unnamed else f"[shape={'Y' if shp else 'N'}/graph={'Y' if grph else 'N'}]"
             names.append(label + tag)
         audit_writer.write(
             f"[level2-audit] {source_path}: multiple top-level THEOREMs: {names}\n"

@@ -111,10 +111,7 @@ def detect_empty_proof(proof_text_clean: str) -> list[CheatingIssue]:
                 if not next_stripped:
                     continue
                 # Only empty if next non-blank line is ==== (module end)
-                if re.match(r'^={3,}', next_stripped):
-                    is_empty = True
-                else:
-                    is_empty = False
+                is_empty = bool(re.match(r'^={3,}', next_stripped))
                 break
             # Also empty if nothing follows at all (EOF)
             if is_empty:

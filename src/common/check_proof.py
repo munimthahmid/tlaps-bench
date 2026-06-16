@@ -42,6 +42,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Also expose the repo `src/` so the SANY gate can `import tlacheck`/`tlacore`
 # when running from source (frozen builds bundle them directly).
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import contextlib
+
 from cheating_detection import (
     detect_dependency_modification,
     detect_empty_proof,
@@ -115,19 +117,13 @@ def run_killgroup(cmd, timeout, cwd):
         return out, err, proc.returncode
     except subprocess.TimeoutExpired:
         escapees = _descendant_pids(proc.pid)
-        try:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
         for pid in escapees:
-            try:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-        try:
+        with contextlib.suppress(Exception):
             proc.communicate(timeout=10)
-        except Exception:
-            pass
         raise
 
 
@@ -600,15 +596,12 @@ def main():
     emit("=" * 60)
 
     if real_issues:
-        verdict = "CHEATING"
         exit_code = 2
         emit(f"  ⚠️  CHEATING — {len(real_issues)} issue(s) found")
     elif tlapm_passed:
-        verdict = "PASS"
         exit_code = 0
         emit("  ✅ PASS — all obligations proved")
     else:
-        verdict = "FAIL"
         exit_code = 1
         # Extract obligation summary
         m = re.search(r'(\d+)/(\d+) obligation', tlapm_output)

@@ -32,6 +32,8 @@ from dataclasses import dataclass
 
 # Allow `python3 src/evaluator/runner.py` as well as module import.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import contextlib
+
 from backends import get_backend, list_backends  # noqa: E402
 from levels import get_level, list_levels  # noqa: E402
 
@@ -229,25 +231,17 @@ def kill_agent_tree(proc, workspace: str):
     except Exception:
         return
     targets = set()
-    try:
+    with contextlib.suppress(Exception):
         targets.update(_proc_descendants(pid))
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         targets.update(_procs_with_cwd_under(workspace))
-    except Exception:
-        pass
     targets.add(pid)
     # Process group first (cheap, scoped to our own session).
-    try:
+    with contextlib.suppress(Exception):
         os.killpg(os.getpgid(pid), signal.SIGKILL)
-    except Exception:
-        pass
     for t in targets:
-        try:
+        with contextlib.suppress(Exception):
             os.kill(t, signal.SIGKILL)
-        except Exception:
-            pass
 
 
 def _mem_available_gb() -> float | None:
@@ -490,10 +484,8 @@ def run_single_benchmark(item: WorkItem):
                 except subprocess.TimeoutExpired:
                     timed_out['v'] = True
                     kill_agent_tree(proc, workspace)
-                    try:
+                    with contextlib.suppress(Exception):
                         proc.wait(timeout=30)
-                    except Exception:
-                        pass
                     stderr = ''
                 finally:
                     if timer:

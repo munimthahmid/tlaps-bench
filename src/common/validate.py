@@ -96,7 +96,7 @@ def find_original_proof(source_files_by_module: dict, theorem_name: str,
     """
     # source_basename is like "Cantor1", "Voting", etc.
     # Try to find in all source files
-    for mod_name, filepath in source_files_by_module.items():
+    for _mod_name, filepath in source_files_by_module.items():
         if os.path.splitext(os.path.basename(filepath))[0] != source_basename:
             continue
 
@@ -575,7 +575,7 @@ def main():
 
     # Generate report
     report_path = os.path.join(PROJECT_ROOT, args.output)
-    report = generate_report(results, report_path)
+    generate_report(results, report_path)
 
     print(f"\n{'='*60}")
     print(f"Validation complete in {total_time:.1f}s")
