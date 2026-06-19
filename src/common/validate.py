@@ -25,12 +25,9 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
-# Internal imports — generate.py is in ../dataset/level1, cheating_detection here.
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.join(_HERE, "..", "dataset", "level1"))
-from cheating_detection import CheatingIssue  # noqa: E402
-from generate import (  # noqa: E402
+# Internal imports
+from common.cheating_detection import CheatingIssue, detect_proof_omitted
+from dataset.level1.generate import (
     BENCHMARK_DIR,
     PROJECT_ROOT,
     SOURCE_ROOT,
@@ -317,8 +314,6 @@ def validate_single_benchmark(args_tuple):
         result.tlapm_passed = exit_code == 0
 
         # Only check if source proof uses PROOF OMITTED (placeholder, not a real proof)
-        from cheating_detection import detect_proof_omitted
-
         result.cheating_issues = detect_proof_omitted(proof_text)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -498,7 +493,7 @@ def main():
     counts = {"PASS": 0, "FAIL": 0, "OMITTED": 0, "ERROR": 0, "NO_PROOF": 0}
 
     def on_result(r, idx, total):
-        counts[r.status] = counts.get(r.status, 0) + 1
+        counts[r.status] += 1
         status_icon = {"PASS": "✅", "FAIL": "❌", "OMITTED": "⏭️", "ERROR": "💥", "NO_PROOF": "🔍"}.get(r.status, "❓")
         summary = f"[✅{counts['PASS']} ❌{counts['FAIL']} ⏭️{counts['OMITTED']} 💥{counts['ERROR']}]"
         print(f"  [{idx}/{total}] {status_icon} {r.benchmark_file} ({r.tlapm_time_secs:.1f}s)  {summary}", flush=True)
