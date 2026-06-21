@@ -470,12 +470,33 @@ def main():
         default=None,
         help="Canonical benchmark/<level>/<module>/ dir (provenance oracle; defaults to git-root reconstruction)",
     )
+    parser.add_argument(
+        "--sany-only",
+        action="store_true",
+        help="Fast SANY-validity check only: parse the file with standalone "
+        "tla2sany and exit (0 valid, 1 invalid) WITHOUT running tlapm. For quick "
+        "syntax feedback while writing a proof — the full check applies the same gate.",
+    )
     args = parser.parse_args()
 
     filepath = os.path.abspath(args.file)
     if not os.path.isfile(filepath):
         print(f"ERROR: File not found: {filepath}")
         sys.exit(3)
+
+    # Fast path: --sany-only skips tlapm and just reports whether the solution
+    # parses under standalone tla2sany (seconds, vs a full proof run). Same gate
+    # the full check applies, so the agent can iterate on syntax quickly.
+    if args.sany_only:
+        status, detail = check_sany_valid(filepath)
+        if status == "valid":
+            print("✅ SANY OK — parses under standalone tla2sany")
+            sys.exit(0)
+        if status == "invalid":
+            print(f"❌ FAIL {SANY_INVALID_MARKER} — {detail[:300]}")
+            sys.exit(1)
+        print(f"⚠️  SANY check unavailable ({detail[:200]}) — could not run; not treated as invalid")
+        sys.exit(0)
 
     # Set up output: write to file and stdout
     output_path = args.output
