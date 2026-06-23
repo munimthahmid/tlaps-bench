@@ -522,8 +522,6 @@ def _run_agent_container(
         env=forward_env(backend.env_keys, model=getattr(backend, "model", None)),
         firewall_hosts=backend.firewall_hosts(),
         install_script=backend.install_script,
-        user_id=os.getuid(),
-        group_id=os.getgid(),
     )
 
     timeout = item.timeout if item.timeout and item.timeout > 0 else None
@@ -645,8 +643,6 @@ def _run_grader_container(
     config = ContainerConfig(
         workspace=workspace,
         result_dir=grading_dir,
-        user_id=os.getuid(),
-        group_id=os.getgid(),
     )
     try:
         exit_code, stdout, stderr = runner.run_with_output(
@@ -815,8 +811,6 @@ def main():
         #     env=forward_env(backend.env_keys, model=getattr(backend, "model", None)),
         #     firewall_hosts=backend.firewall_hosts(),
         #     install_script=backend.install_script,
-        #     user_id=os.getuid(),
-        #     group_id=os.getgid(),
         # )
         # runner.run_preflight(preflight_config, backend.name, backend.install_script)
     else:

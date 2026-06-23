@@ -1,3 +1,3 @@
 #!/bin/bash
 set -e
-npm install -g @github/copilot && npm cache clean --force
+npm install -g @github/copilot --cache /tmp/.npm && rm -rf /tmp/.npm

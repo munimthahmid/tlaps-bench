@@ -86,8 +86,6 @@ class ContainerConfig:
     cap_net_admin: bool = True
     memory: str = "8g"
     cpus: float = 4.0
-    user_id: int = 0
-    group_id: int = 0
 
 
 @dataclass
@@ -114,9 +112,6 @@ class ContainerRunner:
             f"--cpus={config.cpus}",
             f"--memory={config.memory}",
         ]
-
-        if config.user_id:
-            args.append(f"--user={config.user_id}:{config.group_id}")
 
         if config.cap_net_admin and config.firewall_hosts:
             args.append("--cap-add=NET_ADMIN")

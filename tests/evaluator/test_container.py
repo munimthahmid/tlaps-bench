@@ -12,7 +12,7 @@ from evaluator.container import ContainerConfig, ContainerRunner, forward_env
 class TestBuildDockerArgs:
     def test_basic_args(self):
         runner = ContainerRunner()
-        config = ContainerConfig(workspace="/tmp/ws", result_dir="/tmp/res", user_id=1000, group_id=1000)
+        config = ContainerConfig(workspace="/tmp/ws", result_dir="/tmp/res")
         args, cid_file = runner.build_docker_args(config)
 
         assert args[0] == "docker"
@@ -21,7 +21,6 @@ class TestBuildDockerArgs:
         assert "-i" in args
         assert "--memory=8g" in args
         assert "--cpus=4.0" in args
-        assert "--user=1000:1000" in args
 
     def test_workspace_mount(self):
         runner = ContainerRunner()
@@ -74,12 +73,6 @@ class TestBuildDockerArgs:
 
         assert args[-1] == "my-image:v1"
 
-    def test_no_user_when_zero(self):
-        runner = ContainerRunner()
-        config = ContainerConfig(user_id=0, group_id=0)
-        args, _ = runner.build_docker_args(config)
-
-        assert not any(a.startswith("--user=") for a in args)
 
 
 class TestBuildCompositeCommand:
