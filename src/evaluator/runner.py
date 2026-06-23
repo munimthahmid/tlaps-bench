@@ -31,8 +31,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from evaluator.backends import get_backend, list_backends
+from evaluator.backends.base import AgentBackend
 from evaluator.container import ContainerConfig, ContainerRunner, forward_env
 from evaluator.levels import get_level, list_levels
+from evaluator.levels.base import Level
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # File at <repo>/src/evaluator/runner.py — ascend two levels for repo root.
@@ -302,8 +304,8 @@ class WorkItem:
     output_dir: str
     timeout: int
     check_timeout: int
-    backend: object
-    level: object
+    backend: AgentBackend
+    level: Level
     tlapm_path: str
     tlapm_lib: str
     # Quota gate (Claude Max subscription). usage_script=None disables it.
@@ -484,54 +486,12 @@ def run_single_benchmark(item: WorkItem):
         if os.path.isfile(agent_check_file):
             shutil.copy2(agent_check_file, os.path.join(grading_dir, "agent_check.result"))
 
-        # Run grader (always on host)
-        sany_run_sh = os.path.join(REPO_ROOT, "src", "dataset", "sany-dump", "run.sh")
+        # Run grader
         check_result_path = os.path.join(grading_dir, "check.result")
-        check_cmd = level.checker_command(
-            workspace,
-            basename,
-            check_result_path,
-            item.check_timeout,
-            benchmark_dir=os.path.dirname(item.benchmark_path),
-        )
-        try:
-            check_env = dict(os.environ)
-            if os.path.isfile(sany_run_sh):
-                check_env["SANY_RUN_SH"] = sany_run_sh
-            check_proc = subprocess.run(
-                check_cmd,
-                capture_output=True,
-                text=True,
-                timeout=item.check_timeout + 60,
-                cwd=workspace,
-                env=check_env,
-            )
-            with open(os.path.join(grading_dir, "check_debug.txt"), "w") as dbg:
-                dbg.write(f"exit code: {check_proc.returncode}\n")
-                dbg.write(f"stdout:\n{check_proc.stdout}\n")
-                dbg.write(f"stderr:\n{check_proc.stderr}\n")
-            if check_proc.returncode == 0:
-                result["check_verdict"] = "PASS"
-            elif check_proc.returncode == 2:
-                result["check_verdict"] = "CHEATING"
-            elif check_proc.returncode == 1:
-                result["check_verdict"] = "FAIL"
-            else:
-                result["check_verdict"] = "ERROR"
-            result["sany_valid"] = "[SANY-INVALID]" not in (check_proc.stdout or "")
-            ob_matches = re.findall(r"All (\d+) obligation", check_proc.stdout)
-            if ob_matches:
-                result["obligations"] = int(ob_matches[-1])
-            else:
-                fail_match = re.search(r"(\d+)/(\d+) obligation", check_proc.stdout)
-                if fail_match:
-                    result["obligations_failed"] = int(fail_match.group(1))
-                    result["obligations_total"] = int(fail_match.group(2))
-        except subprocess.TimeoutExpired:
-            result["check_verdict"] = "TIMEOUT"
-        except Exception as e:
-            result["check_verdict"] = "ERROR"
-            result["error"] = str(e)
+        if item.use_container:
+            _run_grader_container(item, workspace, basename, grading_dir, check_result_path, result)
+        else:
+            _run_grader_local(item, workspace, basename, grading_dir, check_result_path, result)
 
         # Write per-benchmark result.json
         with open(os.path.join(result_dir, "result.json"), "w") as f:
@@ -661,6 +621,111 @@ def _run_agent_local(
         result["error"] = str(e)
         if proc is not None:
             kill_agent_tree(proc, workspace)
+
+
+def _run_grader_container(
+    item: WorkItem,
+    workspace: str,
+    basename: str,
+    grading_dir: str,
+    check_result_path: str,
+    result: dict,
+) -> None:
+    """Run grader inside a Docker container (check_proof_bin lives in the image)."""
+    runner = ContainerRunner()
+    level = item.level
+
+    check_cmd = level.checker_command(
+        "/workspace",
+        basename,
+        "/grading/check.result",
+        item.check_timeout,
+        benchmark_dir="/workspace",
+    )
+    config = ContainerConfig(
+        workspace=workspace,
+        result_dir=grading_dir,
+        user_id=os.getuid(),
+        group_id=os.getgid(),
+    )
+    try:
+        exit_code, stdout, stderr = runner.run_with_output(
+            config, check_cmd, timeout=item.check_timeout + 60
+        )
+        with open(os.path.join(grading_dir, "check_debug.txt"), "w") as dbg:
+            dbg.write(f"exit code: {exit_code}\n")
+            dbg.write(f"stdout:\n{stdout}\n")
+            dbg.write(f"stderr:\n{stderr}\n")
+        _parse_grader_result(exit_code, stdout, result)
+    except subprocess.TimeoutExpired:
+        result["check_verdict"] = "TIMEOUT"
+    except Exception as e:
+        result["check_verdict"] = "ERROR"
+        result["error"] = str(e)
+
+
+def _run_grader_local(
+    item: WorkItem,
+    workspace: str,
+    basename: str,
+    grading_dir: str,
+    check_result_path: str,
+    result: dict,
+) -> None:
+    """Run grader on host (local mode)."""
+    level = item.level
+    sany_run_sh = os.path.join(REPO_ROOT, "src", "dataset", "sany-dump", "run.sh")
+
+    check_cmd = level.checker_command(
+        workspace,
+        basename,
+        check_result_path,
+        item.check_timeout,
+        benchmark_dir=os.path.dirname(item.benchmark_path),
+    )
+    try:
+        check_env = dict(os.environ)
+        if os.path.isfile(sany_run_sh):
+            check_env["SANY_RUN_SH"] = sany_run_sh
+        check_proc = subprocess.run(
+            check_cmd,
+            capture_output=True,
+            text=True,
+            timeout=item.check_timeout + 60,
+            cwd=workspace,
+            env=check_env,
+        )
+        with open(os.path.join(grading_dir, "check_debug.txt"), "w") as dbg:
+            dbg.write(f"exit code: {check_proc.returncode}\n")
+            dbg.write(f"stdout:\n{check_proc.stdout}\n")
+            dbg.write(f"stderr:\n{check_proc.stderr}\n")
+        _parse_grader_result(check_proc.returncode, check_proc.stdout, result)
+    except subprocess.TimeoutExpired:
+        result["check_verdict"] = "TIMEOUT"
+    except Exception as e:
+        result["check_verdict"] = "ERROR"
+        result["error"] = str(e)
+
+
+def _parse_grader_result(exit_code: int, stdout: str, result: dict) -> None:
+    """Parse grader exit code + stdout into result dict."""
+    if exit_code == 0:
+        result["check_verdict"] = "PASS"
+    elif exit_code == 2:
+        result["check_verdict"] = "CHEATING"
+    elif exit_code == 1:
+        result["check_verdict"] = "FAIL"
+    else:
+        result["check_verdict"] = "ERROR"
+    result["sany_valid"] = "[SANY-INVALID]" not in (stdout or "")
+    ob_matches = re.findall(r"All (\d+) obligation", stdout)
+    if ob_matches:
+        result["obligations"] = int(ob_matches[-1])
+    else:
+        fail_match = re.search(r"(\d+)/(\d+) obligation", stdout)
+        if fail_match:
+            result["obligations_failed"] = int(fail_match.group(1))
+            result["obligations_total"] = int(fail_match.group(2))
 
 
 def main():

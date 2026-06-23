@@ -31,24 +31,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# tlapm 1.6 pre-release
-RUN curl -fsSL -o /tmp/tlapm.tar.gz \
-    https://github.com/tlaplus/tlapm/releases/download/1.6.0-pre/tlapm-1.6.0-pre-x86_64-linux-gnu.tar.gz \
-    && tar -xzf /tmp/tlapm.tar.gz -C /opt/ \
-    && rm /tmp/tlapm.tar.gz \
-    && rm -f /opt/tlapm/bin/tlapm_lsp \
-    && { /opt/tlapm/bin/tlapm --version | grep -q 80172c6 \
-         || { echo "ERROR: tlapm rolling asset moved off commit 80172c6" >&2; exit 1; }; }
-
-# CommunityModules into tlapm stdlib
-RUN curl -fsSL -o /tmp/community.tar.gz \
-    https://github.com/tlaplus/CommunityModules/archive/refs/tags/202604221529.tar.gz \
-    && tar -xzf /tmp/community.tar.gz -C /tmp/ \
-    && cp /tmp/CommunityModules-202604221529/modules/*.tla /opt/tlapm/lib/tlapm/stdlib/ \
-    && rm -rf /tmp/community.tar.gz /tmp/CommunityModules-202604221529
-
-# Lock down tlapm
-RUN chown -R root:root /opt/tlapm && chmod -R a-w /opt/tlapm
+# tlapm is NOT baked in — mounted from host at /opt/tlapm (avoids re-download on rebuild)
+# Container expects: -v ~/.tlapm:/opt/tlapm:ro
 
 # Cheat checker (from builder stage — no source in final image)
 COPY --from=builder /check_proof_bin /usr/local/bin/check_proof_bin

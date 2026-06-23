@@ -127,6 +127,11 @@ class ContainerRunner:
         if config.result_dir:
             args.extend(["-v", f"{config.result_dir}:/results:rw"])
 
+        # tlapm from host (avoids re-download on image rebuild)
+        tlapm_host = Path.home() / ".tlapm"
+        if tlapm_host.is_dir():
+            args.extend(["-v", f"{tlapm_host.resolve()}:/opt/tlapm:ro"])
+
         # Credential directory mounts (read-only except codex which needs write for cache)
         aws_dir = Path.home() / ".aws"
         if aws_dir.is_dir():
