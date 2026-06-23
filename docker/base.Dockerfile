@@ -48,6 +48,9 @@ ENV SANY_RUN_SH=/opt/sany/src/dataset/sany-dump/run.sh \
     TLAPS_LIB=/opt/tlapm/lib/tlapm/stdlib \
     COMMUNITY_LIB=/opt/sany/lib/community
 
+# LiteLLM agent script
+COPY src/evaluator/backends/litellm_agent.py /opt/litellm_agent.py
+
 # Lock down checker + SANY (agent can execute but not read source)
 RUN chmod 0755 /usr/local/bin/check_proof_bin \
     && chown -R root:root /usr/local/bin/check_proof_bin /opt/sany \

@@ -36,8 +36,7 @@ class LiteLLMBackend(AgentBackend):
     def build_command(self, workspace: str, result_dir: str) -> list[str]:
         return [
             "python3",
-            "-m",
-            "evaluator.backends.litellm_agent",
+            "/opt/litellm_agent.py",
             "--workspace",
             workspace,
             "--model",

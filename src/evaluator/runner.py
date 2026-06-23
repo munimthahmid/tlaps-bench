@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Run an agent CLI on TLAPS benchmarks to attempt automated proof writing.
 

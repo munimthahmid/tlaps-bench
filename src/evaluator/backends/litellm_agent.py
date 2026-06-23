@@ -1,15 +1,12 @@
-#!/usr/bin/env python3
-"""Standalone LiteLLM agent script. Runs inside container or locally.
+"""LiteLLM agent with tool-calling loop. Runs inside container.
 
-Reads prompt from stdin, calls model via litellm, writes proof to .tla file.
-Outputs JSONL to stdout for the runner to capture.
+Tools: read_file, write_file, bash
+Loops until model stops calling tools or max iterations hit.
 """
 
 import argparse
-import glob
 import json
 import os
-import re
 import subprocess
 import sys
 
@@ -19,12 +16,91 @@ except ImportError:
     print(json.dumps({"type": "error", "message": "litellm not installed"}))
     sys.exit(1)
 
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read contents of a file",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "File path"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write content to a file (overwrites)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path"},
+                    "content": {"type": "string", "description": "File content"},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash",
+            "description": "Run a bash command and return stdout/stderr",
+            "parameters": {
+                "type": "object",
+                "properties": {"command": {"type": "string", "description": "Command to run"}},
+                "required": ["command"],
+            },
+        },
+    },
+]
+
+
+def exec_tool(name: str, args: dict, workspace: str) -> str:
+    try:
+        if name == "read_file":
+            path = args["path"]
+            if not os.path.isabs(path):
+                path = os.path.join(workspace, path)
+            with open(path) as f:
+                return f.read()
+        elif name == "write_file":
+            path = args["path"]
+            if not os.path.isabs(path):
+                path = os.path.join(workspace, path)
+            with open(path, "w") as f:
+                f.write(args["content"])
+            return "OK"
+        elif name == "bash":
+            r = subprocess.run(
+                args["command"],
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                cwd=workspace,
+            )
+            out = ""
+            if r.stdout:
+                out += r.stdout[-4000:]
+            if r.stderr:
+                out += "\nSTDERR:\n" + r.stderr[-2000:]
+            out += f"\nexit code: {r.returncode}"
+            return out
+        else:
+            return f"ERROR: unknown tool '{name}'"
+    except Exception as e:
+        return f"ERROR: {e}"
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--max-attempts", type=int, default=1)
+    parser.add_argument("--max-iterations", type=int, default=0)
     args = parser.parse_args()
 
     prompt = sys.stdin.read()
@@ -32,88 +108,57 @@ def main() -> None:
         print(json.dumps({"type": "error", "message": "empty prompt on stdin"}))
         sys.exit(1)
 
-    tla_files = glob.glob(os.path.join(args.workspace, "*.tla"))
-    if not tla_files:
-        print(json.dumps({"type": "error", "message": "no .tla file in workspace"}))
-        sys.exit(1)
-
-    benchmark_file = tla_files[0]
-    with open(benchmark_file) as f:
-        benchmark_content = f.read()
-
     messages = [{"role": "user", "content": prompt}]
     total_in = 0
     total_out = 0
+    i = 0
 
-    for attempt in range(args.max_attempts):
+    while args.max_iterations == 0 or i < args.max_iterations:
+        i += 1
         try:
             response = litellm.completion(
                 model=args.model,
                 messages=messages,
+                tools=TOOLS,
                 temperature=0.0,
                 max_tokens=16384,
             )
         except Exception as e:
-            print(json.dumps({"type": "error", "message": str(e)}))
-            sys.exit(1)
+            print(json.dumps({"type": "error", "message": str(e), "iteration": i}))
+            break
 
         usage = response.usage
         if usage:
             total_in += usage.prompt_tokens or 0
             total_out += usage.completion_tokens or 0
 
-        text = response.choices[0].message.content or ""
-        print(json.dumps({"type": "response", "text": text, "attempt": attempt + 1}))
+        msg = response.choices[0].message
+        # Append assistant message to conversation
+        messages.append(msg.model_dump())
 
-        proof_content = extract_proof(text, benchmark_content)
-        with open(benchmark_file, "w") as f:
-            f.write(proof_content)
-
-        if args.max_attempts == 1 or attempt == args.max_attempts - 1:
+        tool_calls = msg.tool_calls
+        if not tool_calls:
+            # Model is done
+            if msg.content:
+                print(json.dumps({"type": "response", "text": msg.content, "iteration": i}))
             break
 
-        # Multi-turn: run tlapm and check result
-        tlapm_bin = "/opt/tlapm/bin/tlapm"
-        tlapm_lib = "/opt/tlapm/lib/tlapm/stdlib"
-        check = subprocess.run(
-            [tlapm_bin, "-I", tlapm_lib, os.path.basename(benchmark_file)],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=args.workspace,
-        )
-        if check.returncode == 0:
-            break
-
-        error_msg = (check.stderr or check.stdout or "")[:3000]
-        messages.append({"role": "assistant", "content": text})
-        messages.append({
-            "role": "user",
-            "content": f"tlapm verification failed:\n{error_msg}\n\nFix the proof and return the complete file.",
-        })
+        # Execute tool calls
+        for tc in tool_calls:
+            fn_name = tc.function.name
+            fn_args = json.loads(tc.function.arguments)
+            print(json.dumps({"type": "tool_call", "name": fn_name, "args": fn_args, "iteration": i}))
+            result = exec_tool(fn_name, fn_args, args.workspace)
+            print(json.dumps({"type": "tool_result", "name": fn_name, "result": result[:2000], "iteration": i}))
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result,
+                }
+            )
 
     print(json.dumps({"type": "usage", "input_tokens": total_in, "output_tokens": total_out}))
-
-
-def extract_proof(response_text: str, original_content: str) -> str:
-    """Extract the complete .tla file content from model response."""
-    match = re.search(r"```(?:tla\+?|TLA\+?)?\s*\n(.+?)```", response_text, re.DOTALL)
-    if match:
-        extracted = match.group(1).strip()
-        if "----" in extracted and "MODULE" in extracted:
-            return extracted
-
-    if "----" in response_text and "MODULE" in response_text:
-        lines = response_text.split("\n")
-        start = next((i for i, line in enumerate(lines) if "----" in line and "MODULE" in line), 0)
-        end = len(lines)
-        for i in range(len(lines) - 1, start, -1):
-            if lines[i].startswith("===="):
-                end = i + 1
-                break
-        return "\n".join(lines[start:end])
-
-    return response_text
 
 
 if __name__ == "__main__":
