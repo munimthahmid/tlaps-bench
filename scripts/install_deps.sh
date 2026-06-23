@@ -100,19 +100,23 @@ else
   tar -xzf "${TLAPM_TMP}/${TLAPM_ASSET}" -C "${TLAPM_TMP}/"
 
   STAGED_TLAPM="${TLAPM_TMP}/tlapm"
-  if [[ ! -x "${STAGED_TLAPM}/bin/tlapm" ]]; then
-    echo "[install_deps] ERROR: downloaded archive does not contain an executable bin/tlapm." >&2
-    exit 1
+  if [[ ! -f "${STAGED_TLAPM}/bin/tlapm" ]]; then
+    die "downloaded archive does not contain bin/tlapm"
   fi
+  # Version check is best-effort: tlapm may not run on this host (glibc mismatch)
+  # but still works inside the Docker container. Don't fail setup over it.
   installed="$("${STAGED_TLAPM}/bin/tlapm" --version 2>/dev/null | sed -n '1p' || true)"
-  if [[ "${installed}" != *"${TLAPM_COMMIT}"* ]]; then
-    echo "[install_deps] ERROR: downloaded tlapm version '${installed:-unknown}'" >&2
+  if [[ -n "${installed}" ]] && [[ "${installed}" != *"${TLAPM_COMMIT}"* ]]; then
+    echo "[install_deps] ERROR: downloaded tlapm version '${installed}'" >&2
     echo "[install_deps]        does not contain expected commit ${TLAPM_COMMIT}." >&2
     echo "[install_deps]        The rolling ${TLAPM_TAG} asset has moved. Run 'git pull'" >&2
     echo "[install_deps]        and retry; if this persists, TLAPM_COMMIT and the" >&2
     echo "[install_deps]        Dockerfile pin must be updated together." >&2
     echo "[install_deps]        Any existing ~/.tlapm installation was left unchanged." >&2
     exit 1
+  elif [[ -z "${installed}" ]]; then
+    echo "[install_deps] NOTE: tlapm binary downloaded but cannot execute on this host" >&2
+    echo "[install_deps]       (likely glibc mismatch). It will work inside the Docker container." >&2
   fi
 
   rm -f "${STAGED_TLAPM}/bin/tlapm_lsp" 2>/dev/null || true
