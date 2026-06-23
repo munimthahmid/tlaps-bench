@@ -656,6 +656,9 @@ def _run_grader_container(
     runner = ContainerRunner()
     level = item.level
 
+    # Use container path for checker binary (not host path)
+    old_binary = level._checker_binary
+    level._checker_binary = "/usr/local/bin/check_proof_bin"
     check_cmd = level.checker_command(
         "/workspace",
         basename,
@@ -663,6 +666,7 @@ def _run_grader_container(
         item.check_timeout,
         benchmark_dir="/workspace",
     )
+    level._checker_binary = old_binary
     config = ContainerConfig(
         workspace=workspace,
         result_dir=grading_dir,

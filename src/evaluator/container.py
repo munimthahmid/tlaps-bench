@@ -107,6 +107,7 @@ class ContainerRunner:
             "docker",
             "run",
             "--rm",
+            "--init",
             "-i",
             f"--cidfile={cid_file}",
             f"--cpus={config.cpus}",
