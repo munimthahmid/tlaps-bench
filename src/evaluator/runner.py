@@ -722,33 +722,18 @@ def main():
         print(f"ERROR: {auth_err}")
         sys.exit(1)
 
-    ensure_tlapm()
-    # tlapm has two paths the runner tracks separately:
-    #   tlapm_root — install root (TLAPM_PERSISTENT). The prompt template
-    #                appends `/bin/tlapm` itself, and uses tlapm_root for
-    #                "do not modify any files under {tlapm_path}/".
-    #   tlapm_bin  — the binary, used by find_tlapm_lib (which derives the
-    #                lib dir as two levels above the binary).
-    # Conflating the two caused the prompt to expand to
-    # `<install_root>/bin/tlapm/bin/tlapm`, which the agent then ran and
-    # got "Not a directory" on every tlapm invocation.
-    tlapm_root = TLAPM_PERSISTENT
-    tlapm_bin = os.path.join(tlapm_root, "bin", "tlapm")
-    tlapm_lib = find_tlapm_lib(tlapm_bin)
-    if not tlapm_lib:
-        print(f"ERROR: tlapm lib not found near {tlapm_bin}")
-        sys.exit(1)
-
-    benchmark_root, checker_binary = resolve_paths()
-    if not os.path.isfile(checker_binary):
-        print(f"ERROR: checker binary not found at {checker_binary}")
-        print("       run `make` at the repo root to build it.")
-        sys.exit(1)
-    level = get_level(args.level, benchmark_root, checker_binary)
-
     # Container mode is default; --no-container disables it
     use_container = not args.no_container
+
     if use_container:
+        # In container mode, tlapm and checker are inside the image.
+        # Use container-side paths for prompts.
+        tlapm_root = "/opt/tlapm"
+        tlapm_lib = "/opt/tlapm/lib/tlapm/stdlib"
+        benchmark_root = os.path.join(REPO_ROOT, "benchmark")
+        checker_binary = "/usr/local/bin/check_proof_bin"
+        level = get_level(args.level, benchmark_root, checker_binary)
+
         dockerfile = os.path.join(REPO_ROOT, "docker", "base.Dockerfile")
         if args.force_build:
             print("Building Docker image (--force-build)...")
@@ -768,6 +753,22 @@ def main():
             group_id=os.getgid(),
         )
         runner.run_preflight(preflight_config, backend.name, backend.install_script)
+    else:
+        # Local mode: require tlapm and checker on host
+        ensure_tlapm()
+        tlapm_root = TLAPM_PERSISTENT
+        tlapm_bin = os.path.join(tlapm_root, "bin", "tlapm")
+        tlapm_lib = find_tlapm_lib(tlapm_bin)
+        if not tlapm_lib:
+            print(f"ERROR: tlapm lib not found near {tlapm_bin}")
+            sys.exit(1)
+
+        benchmark_root, checker_binary = resolve_paths()
+        if not os.path.isfile(checker_binary):
+            print(f"ERROR: checker binary not found at {checker_binary}")
+            print("       run `make` at the repo root to build it.")
+            sys.exit(1)
+        level = get_level(args.level, benchmark_root, checker_binary)
 
     # results/<level>/<backend>/<ts>/  (level first, then agent)
     if args.output_dir:
