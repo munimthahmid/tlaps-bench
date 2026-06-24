@@ -19,8 +19,9 @@ class TestBuildDockerArgs:
         assert args[1] == "run"
         assert "--rm" in args
         assert "-i" in args
-        assert "--memory=8g" in args
-        assert "--cpus=4.0" in args
+        # No memory/cpu limits by default (uses all host resources)
+        assert not any(a.startswith("--memory=") for a in args)
+        assert not any(a.startswith("--cpus=") for a in args)
 
     def test_workspace_mount(self):
         runner = ContainerRunner()

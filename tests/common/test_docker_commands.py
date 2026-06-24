@@ -68,9 +68,11 @@ class TestCheckDockerDispatch:
 
         mock_run.assert_called_once()
         config, cmd = mock_run.call_args[0][:2]
-        assert config.workspace == FIXTURE_DIR
+        # Mounts repo root (for git access) or fixture dir (no git)
+        assert os.path.isdir(config.workspace)
         assert cmd[0] == "/usr/local/bin/check_proof_bin"
-        assert "/workspace/Simple_TypeOK.tla" in cmd
+        # File path is relative to workspace
+        assert any("Simple_TypeOK.tla" in c for c in cmd)
         assert exc_info.value.code == 1
 
     @patch("common.container.ContainerRunner.run_with_output")

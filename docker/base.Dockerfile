@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # Stage 1: Compile check_proof_bin from source (no source leaks to final image)
 FROM python:3.12-slim AS builder
 
@@ -18,53 +20,85 @@ RUN cd /build && pyinstaller --onefile --name check_proof_bin \
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
-# Core dependencies (JDK for SANY compilation)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Layer 1: System packages (rarely changes)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates git python3 python3-pip \
     libstdc++6 libgmp10 make \
     default-jdk-headless \
-    iptables iproute2 dnsutils \
-    && rm -rf /var/lib/apt/lists/*
+    iptables iproute2 dnsutils
 
-# Node.js 22 (needed by codex/claude/copilot install scripts)
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
+# Layer 2: Node.js (rarely changes)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs
 
-# tlapm is NOT baked in — mounted from host at /opt/tlapm (avoids re-download on rebuild)
-# Container expects: -v ~/.tlapm:/opt/tlapm:ro
+# Layer 3: tlapm (pinned version, ~850MB download, rarely changes)
+ARG TLAPM_TAG=1.6.0-pre
+ARG TLAPM_ASSET=tlapm-${TLAPM_TAG}-x86_64-linux-gnu.tar.gz
+ARG TLAPM_URL=https://github.com/tlaplus/tlapm/releases/download/${TLAPM_TAG}/${TLAPM_ASSET}
+RUN --mount=type=cache,target=/tmp/downloads \
+    if [ ! -f /tmp/downloads/${TLAPM_ASSET} ]; then \
+      curl -fsSL -o /tmp/downloads/${TLAPM_ASSET} "${TLAPM_URL}"; \
+    fi \
+    && tar -xzf /tmp/downloads/${TLAPM_ASSET} -C /opt/ \
+    && rm -f /opt/tlapm/bin/tlapm_lsp
 
-# Cheat checker (from builder stage — no source in final image)
-COPY --from=builder /check_proof_bin /usr/local/bin/check_proof_bin
+# Layer 4: tla2tools.jar / SANY (downloaded inside Docker — no host dependency)
+ARG TLATOOLS_TAG=v1.8.0
+ARG TLATOOLS_URL=https://github.com/tlaplus/tlaplus/releases/download/${TLATOOLS_TAG}/tla2tools.jar
+RUN --mount=type=cache,target=/tmp/downloads \
+    if [ ! -f /tmp/downloads/tla2tools-${TLATOOLS_TAG}.jar ]; then \
+      curl -fsSL -o /tmp/downloads/tla2tools-${TLATOOLS_TAG}.jar "${TLATOOLS_URL}"; \
+    fi \
+    && mkdir -p /opt/sany/lib \
+    && cp /tmp/downloads/tla2tools-${TLATOOLS_TAG}.jar /opt/sany/lib/tla2tools.jar
 
-# SANY assets + compile DumpSemantics inside image
-COPY lib/tla2tools.jar /opt/sany/lib/tla2tools.jar
-COPY lib/community /opt/sany/lib/community
+# Layer 5: Community modules (downloaded inside Docker — no host dependency)
+ARG COMMUNITY_TAG=202604221529
+ARG COMMUNITY_URL=https://github.com/tlaplus/CommunityModules/archive/refs/tags/${COMMUNITY_TAG}.tar.gz
+RUN --mount=type=cache,target=/tmp/downloads \
+    if [ ! -f /tmp/downloads/community-${COMMUNITY_TAG}.tar.gz ]; then \
+      curl -fsSL -o /tmp/downloads/community-${COMMUNITY_TAG}.tar.gz "${COMMUNITY_URL}"; \
+    fi \
+    && mkdir -p /opt/community \
+    && tar -xzf /tmp/downloads/community-${COMMUNITY_TAG}.tar.gz -C /tmp/ \
+    && cp /tmp/CommunityModules-${COMMUNITY_TAG}/modules/*.tla /opt/community/ \
+    && rm -rf /tmp/CommunityModules-${COMMUNITY_TAG}
+
+# Layer 6: SANY DumpSemantics compilation (needs tla2tools.jar + JDK)
 COPY src/dataset/sany-dump /opt/sany/src/dataset/sany-dump
-RUN cd /opt/sany/src/dataset/sany-dump && bash build.sh
+RUN cp -r /opt/community /opt/sany/lib/community \
+    && cd /opt/sany/src/dataset/sany-dump && bash build.sh
+
+# Layer 7: check_proof_bin (changes when src/ changes)
+COPY --from=builder /check_proof_bin /usr/local/bin/check_proof_bin
 
 ENV SANY_RUN_SH=/opt/sany/src/dataset/sany-dump/run.sh \
     TLAPS_LIB=/opt/tlapm/lib/tlapm/stdlib \
-    COMMUNITY_LIB=/opt/sany/lib/community
+    COMMUNITY_LIB=/opt/community
 
-# LiteLLM agent script
+# Layer 8: LiteLLM agent script
 COPY src/evaluator/backends/litellm_agent.py /opt/litellm_agent.py
 
-# Lock down checker + SANY (agent can execute but not read source)
+# Lock down checker + SANY
 RUN chmod 0755 /usr/local/bin/check_proof_bin \
     && chown -R root:root /usr/local/bin/check_proof_bin /opt/sany \
     && chmod -R a-w /opt/sany
 
-# Install scripts directory
+# Layer 9: Install scripts + firewall + entrypoint (changes sometimes)
 COPY docker/install-scripts /opt/install-scripts
 RUN chmod -R +x /opt/install-scripts
 
-# Firewall script
 COPY docker/firewall.sh /opt/firewall.sh
 RUN chmod +x /opt/firewall.sh
 
-# Entrypoint: run firewall then exec the command
 COPY docker/base-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
