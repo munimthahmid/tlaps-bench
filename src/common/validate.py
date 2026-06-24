@@ -482,12 +482,17 @@ def main():
         action="store_true",
         help="Run tlapm on host instead of Docker (requires local tlapm installation)",
     )
+    parser.add_argument(
+        "--force-build",
+        action="store_true",
+        help="Rebuild Docker image before running",
+    )
     args = parser.parse_args()
 
     use_container = not args.no_container
 
     if use_container:
-        ensure_image()
+        ensure_image(force=args.force_build)
         tlapm_path = "/opt/tlapm/bin/tlapm"  # placeholder, not used directly
         tlapm_lib = "/opt/tlapm/lib/tlapm/stdlib"
         print("Using tlapm: Docker container")

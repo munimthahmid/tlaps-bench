@@ -480,29 +480,49 @@ def parse_strict_status(tlapm_exit, tlapm_output):
 
 def _run_in_container(filepath, args):
     """Run check_proof_bin inside Docker container."""
-    ensure_image()
+    ensure_image(force=getattr(args, "force_build", False))
     runner = ContainerRunner()
 
-    # Mount the directory containing the .tla file (includes deps)
-    workspace = os.path.dirname(filepath)
-    basename = os.path.basename(filepath)
+    # Mount repo root so git cheating checks (main branch comparison) work
+    repo_root = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        cwd=os.path.dirname(filepath) or ".",
+    ).stdout.strip()
+
     result_dir = tempfile.mkdtemp(prefix="tlaps_check_docker_")
 
-    cmd = ["/usr/local/bin/check_proof_bin", f"/workspace/{basename}"]
+    if repo_root:
+        rel_path = os.path.relpath(filepath, repo_root)
+        container_file = f"/workspace/{rel_path}"
+        workspace = repo_root
+    else:
+        container_file = f"/workspace/{os.path.basename(filepath)}"
+        workspace = os.path.dirname(filepath)
+
+    cmd = ["/usr/local/bin/check_proof_bin", container_file]
+    cmd += ["--no-container"]
     cmd += ["--level", str(args.level)]
     cmd += ["--timeout", str(args.timeout)]
     cmd += ["--output", "/results/check.result"]
     if args.benchmark_dir:
-        cmd += ["--benchmark-dir", "/workspace"]
+        cmd += ["--benchmark-dir", os.path.dirname(container_file)]
     if args.sany_only:
         cmd += ["--sany-only"]
 
     config = ContainerConfig(workspace=workspace, result_dir=result_dir)
+    config.env["GIT_CONFIG_COUNT"] = "1"
+    config.env["GIT_CONFIG_KEY_0"] = "safe.directory"
+    config.env["GIT_CONFIG_VALUE_0"] = "/workspace"
     try:
         exit_code, stdout, stderr = runner.run_with_output(config, cmd, timeout=args.timeout + 60)
-        # Print output (mirrors local behavior)
+        # Print output, filtering container-internal paths
         if stdout:
-            print(stdout, end="")
+            for line in stdout.splitlines():
+                if line.startswith("Result written to: /results/"):
+                    continue
+                print(line)
         if stderr:
             print(stderr, end="", file=sys.stderr)
 
@@ -544,6 +564,11 @@ def main():
         "--no-container",
         action="store_true",
         help="Run tlapm on host instead of Docker (requires local tlapm installation)",
+    )
+    parser.add_argument(
+        "--force-build",
+        action="store_true",
+        help="Rebuild Docker image before running",
     )
     args = parser.parse_args()
 
@@ -737,7 +762,8 @@ def main():
         warnings.append((0, f"SANY validity check skipped ({sany_detail[:160]})"))
 
     for _line_num, desc in warnings:
-        emit(f"  WARNING: {desc}")
+        msg = desc.removeprefix("WARNING: ")
+        emit(f"  WARNING: {msg}")
 
     if real_issues:
         for line_num, desc in real_issues:

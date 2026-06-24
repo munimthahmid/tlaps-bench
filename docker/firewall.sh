@@ -6,7 +6,6 @@
 set -e
 
 if [ "${DISABLE_FIREWALL:-0}" = "1" ]; then
-    echo "[firewall] Disabled (DISABLE_FIREWALL=1)"
     exit 0
 fi
 
