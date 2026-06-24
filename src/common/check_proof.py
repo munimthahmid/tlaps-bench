@@ -19,12 +19,12 @@ Levels:
 Output:
     - Raw tlapm output (preserved verbatim)
     - Cheating check (compares against main branch where applicable)
-    - Summary verdict: PASS / FAIL / CHEATING
+    - Binary verdict: PASS / FAIL. A cheat is not a separate verdict — it is just
+      a FAIL; the failing gate is shown in the output and on a GATES-FAILED line.
 
 Exit codes:
     0 = PASS
-    1 = FAIL (proof doesn't verify)
-    2 = CHEATING (tampering detected)
+    1 = FAIL (proof doesn't verify, or a soundness gate failed)
     3 = ERROR (could not run check)
 """
 
@@ -373,8 +373,10 @@ def run_tlacheck_engine(filepath, target_name, summary_output, tlapm_passed, ben
     """Run the compiled-in SANY + incomplete-proof cheat engine.
 
     Folds CHEATING and INCOMPLETE findings into one list — any of them must fail
-    the run. On any internal error returns ([], reason) so the engine never
-    spuriously fails an otherwise-valid proof. ``benchmark_dir`` (when the runner
+    the run. Returns ``(issue_strings, reason, result)`` where ``result`` is the
+    tlacheck ``Result`` (or ``None`` on any internal error, so the engine never
+    spuriously fails an otherwise-valid proof — ``result`` also feeds the shadow
+    gate-framework verdict). ``benchmark_dir`` (when the runner
     supplies the canonical read-only module dir) is the tamper-proof provenance
     oracle; otherwise we reconstruct it from the git root commit.
     """
@@ -383,7 +385,7 @@ def run_tlacheck_engine(filepath, target_name, summary_output, tlapm_passed, ben
         from tlacheck.engine import evaluate
         from tlacore.tlapm.summary import parse_summary
     except Exception as e:
-        return [], f"tlacheck import failed: {e}"
+        return [], f"tlacheck import failed: {e}", None
 
     cleanup = []
     try:
@@ -391,7 +393,7 @@ def run_tlacheck_engine(filepath, target_name, summary_output, tlapm_passed, ben
         bench = benchmark_dir or git_bench
         if sol_dir is None:
             if benchmark_dir is None:
-                return [], "no git baseline available"
+                return [], "no git baseline available", None
             sol_dir = os.path.dirname(os.path.abspath(filepath))
         summary = parse_summary(summary_output) if summary_output else None
         ctx = build_context(
@@ -405,12 +407,12 @@ def run_tlacheck_engine(filepath, target_name, summary_output, tlapm_passed, ben
         )
         res = evaluate(ctx)
     except Exception as e:
-        return [], f"tlacheck error: {e}"
+        return [], f"tlacheck error: {e}", None
     finally:
         for d in cleanup:
             shutil.rmtree(d, ignore_errors=True)
 
-    return ([str(i) for i in res.cheating_issues] + [str(i) for i in res.incomplete_issues]), ""
+    return ([str(i) for i in res.cheating_issues] + [str(i) for i in res.incomplete_issues]), "", res
 
 
 # Machine-readable marker the runner greps for to set the structured
@@ -512,12 +514,12 @@ def main():
     if args.sany_only:
         status, detail = check_sany_valid(filepath)
         if status == "valid":
-            print("✅ SANY OK — parses under standalone tla2sany")
+            print("SANY OK — parses under standalone tla2sany")
             sys.exit(0)
         if status == "invalid":
-            print(f"❌ FAIL {SANY_INVALID_MARKER} — {detail[:300]}")
+            print(f"FAIL {SANY_INVALID_MARKER} — {detail[:300]}")
             sys.exit(1)
-        print(f"⚠️  SANY check unavailable ({detail[:200]}) — could not run; not treated as invalid")
+        print(f"WARNING: SANY check unavailable ({detail[:200]}) — could not run; not treated as invalid")
         sys.exit(0)
 
     # Set up output: write to file and stdout
@@ -670,7 +672,7 @@ def main():
     # ANY helper lemma (not just the target). Runs on every check so the agent
     # gets the same verdict the grader does. Any finding fails the run.
     target_name = os.path.splitext(os.path.basename(filepath))[0]
-    engine_issues, engine_reason = run_tlacheck_engine(
+    engine_issues, engine_reason, engine_result = run_tlacheck_engine(
         filepath, target_name, summary_output, tlapm_passed, benchmark_dir=args.benchmark_dir
     )
     if engine_reason:
@@ -695,40 +697,78 @@ def main():
     else:
         emit("  No cheating detected.")
 
-    # --- Step 3: Verdict ---
+    # --- Step 3: Verdict — BINARY pass/fail via the A/B/C gate framework ------
     emit()
     emit("=" * 60)
     emit("VERDICT")
     emit("=" * 60)
 
-    if real_issues:
-        exit_code = 2
-        emit(f"  ⚠️  CHEATING — {len(real_issues)} issue(s) found")
-    elif sany_status == "invalid":
-        # SANY-invalid is a FAIL (not a cheat), but a distinct one: the solution
-        # is rejected by the canonical parser even if tlapm's lenient parser
-        # accepted it. The marker lets the runner flag sany_valid=False.
-        exit_code = 1
-        emit(f"  ❌ FAIL {SANY_INVALID_MARKER} — solution does not parse under standalone tla2sany: {sany_detail[:200]}")
-    elif tlapm_passed:
+    # Legacy-only signals not yet a tlacheck vector (L1 preamble byte-match,
+    # agent-added PROOF OMITTED), computed with the same detectors the legacy
+    # path uses, so the gates capture everything the old checker did.
+    legacy_preamble_modified = False
+    legacy_proof_omitted = False
+    try:
+        with open(filepath) as _f:
+            _sol_text = _f.read()
+        if args.level == 1:
+            _main = get_main_version(filepath)
+            if _main:
+                _main_lines = _main.split("\n")
+                _po = find_proof_obvious_line(_main_lines)
+                if _po is not None:
+                    _cur = _sol_text.split("\n")
+                    legacy_preamble_modified = bool(detect_preamble_modification(_main_lines, _cur, _po))
+                    legacy_proof_omitted = bool(detect_proof_omitted("\n".join(_cur[_po:])))
+        else:
+            legacy_proof_omitted = bool(detect_proof_omitted(_sol_text))
+    except Exception:
+        pass
+
+    # The gate framework (src/tlacheck/gates.py) is the authoritative grader:
+    # PASS iff identity AND discharge AND trust. "Cheating" is NOT a separate verdict
+    # — it is just a gate failing, so the outcome is binary PASS / FAIL.
+    grade_passed, grade_reasons, grade_gates = True, [], []
+    try:
+        from tlacheck.gates import from_tlacheck, grade
+
+        _gr = grade(
+            from_tlacheck(
+                engine_result,
+                tlapm_obligations_proved=(not obligation_failed and tlapm_exit in (0, 11)),
+                n_missing=n_missing,
+                sany_valid=(sany_status != "invalid"),
+                preamble_modified=legacy_preamble_modified,
+                proof_omitted=legacy_proof_omitted,
+            )
+        )
+        grade_passed, grade_reasons = _gr.passed, _gr.reasons
+        grade_gates = [g.value for g in _gr.failed_gates()]
+    except Exception as e:  # never let the grader crash the check
+        grade_reasons = [f"gate framework unavailable ({e}); fell back to legacy verdict"]
+        grade_passed = None  # signal: use legacy verdict alone
+
+    # Safety net during migration: the legacy path must also agree before we
+    # report PASS, so the consolidated grader can never be LESS strict than the
+    # checker it replaces. Validated equal on a real-solution corpus; kept until
+    # the legacy detectors are retired.
+    legacy_pass = (not real_issues) and (sany_status != "invalid") and tlapm_passed
+    passed = legacy_pass if grade_passed is None else (grade_passed and legacy_pass)
+
+    if passed:
         exit_code = 0
-        emit("  ✅ PASS — all obligations proved")
+        emit("  PASS — target goal genuinely proved (identity and discharge and trust)")
     else:
         exit_code = 1
-        # Extract obligation summary
-        m = re.search(r"(\d+)/(\d+) obligation", tlapm_output)
-        if obligation_failed and m:
-            emit(f"  ❌ FAIL — {m.group(1)}/{m.group(2)} obligations failed")
-        elif obligation_failed:
-            emit(f"  ❌ FAIL — tlapm reported failed obligations (exit {tlapm_exit})")
-        elif n_missing > 0:
-            emit(f"  ❌ FAIL — proof incomplete: {n_missing} step(s) have no proof (tlapm --strict)")
-        elif tlapm_exit == 12:
-            emit("  ❌ FAIL — no proof obligation for the selected target (tlapm --strict)")
-        elif "TIMEOUT" in tlapm_output:
-            emit(f"  ❌ FAIL — timeout after {args.timeout}s")
-        else:
-            emit(f"  ❌ FAIL — tlapm exit code {tlapm_exit}")
+        emit("  FAIL")
+        for reason in grade_reasons:
+            emit(f"    {reason}")
+        if sany_status == "invalid":
+            emit(f"    {SANY_INVALID_MARKER} {sany_detail[:200]}")
+        if grade_gates:
+            emit(f"  GATES-FAILED: {','.join(grade_gates)}")
+        if grade_passed and not legacy_pass:
+            emit("  FAIL: legacy safety-net flagged a failure the gates missed — investigate divergence")
 
     # Write result file
     print(f"\nResult written to: {output_path}")
