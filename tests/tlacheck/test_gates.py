@@ -2,8 +2,10 @@
 
 Covers: the binary PASS/FAIL collapse, each WIRED gate check failing the run,
 PLACEHOLDER checks failing-open (so the skeleton is never less strict than the
-wired siblings but unbuilt checks don't block), and the from_tlacheck migration
-mapping real tlacheck issue vectors onto the right gate.
+wired siblings but unbuilt checks don't block), the caller-computed legacy
+signals (L1 preamble byte-match, agent-added PROOF OMITTED) flowing to their
+gates, and the from_tlacheck migration mapping real tlacheck issue vectors onto
+the right gate.
 
 Run: PYTHONPATH=src python3 -m pytest tests/tlacheck/test_gates.py
 (or:  PYTHONPATH=src python3 tests/tlacheck/test_gates.py)
@@ -19,9 +21,11 @@ CLEAN = GraderInputs(
     statement_modified=False,
     extra_axiom=False,
     smuggled_module=False,
+    preamble_modified=False,
     tlapm_obligations_proved=True,
     n_missing=0,
     admitted_goal=False,
+    proof_omitted=False,
     admitted_extra=False,
     deps_modified=False,
     graded_on_canonical=True,
@@ -35,14 +39,16 @@ def test_clean_passes():
 
 
 def test_each_wired_failure_fails_the_run():
-    # (field to flip, expected failing gate)
+    # (field to flip, expected failing gate, bad value)
     cases = [
         ("sany_valid", Gate.A_IDENTITY, False),
         ("statement_modified", Gate.A_IDENTITY, True),
         ("extra_axiom", Gate.A_IDENTITY, True),
         ("smuggled_module", Gate.A_IDENTITY, True),
+        ("preamble_modified", Gate.A_IDENTITY, True),
         ("tlapm_obligations_proved", Gate.B_DISCHARGE, False),
         ("admitted_goal", Gate.B_DISCHARGE, True),
+        ("proof_omitted", Gate.B_DISCHARGE, True),
         ("deps_modified", Gate.C_TRUST, True),
     ]
     for field_name, gate, bad_value in cases:
@@ -93,6 +99,21 @@ def test_from_tlacheck_buckets_vectors():
         r = grade(inp)
         assert not r.passed, f"{vector} should FAIL the run"
         assert gate in r.failed_gates(), f"{vector} should map to {gate}"
+
+
+def test_from_tlacheck_legacy_signals_flow_to_gates():
+    # L1 preamble byte-match (gate A) and agent-added PROOF OMITTED (gate B) are
+    # not tlacheck vectors — they come in as explicit caller-computed flags.
+    pre = from_tlacheck(
+        _result(), tlapm_obligations_proved=True, n_missing=0, sany_valid=True, preamble_modified=True
+    )
+    assert not grade(pre).passed
+    assert Gate.A_IDENTITY in grade(pre).failed_gates()
+    omit = from_tlacheck(
+        _result(), tlapm_obligations_proved=True, n_missing=0, sany_valid=True, proof_omitted=True
+    )
+    assert not grade(omit).passed
+    assert Gate.B_DISCHARGE in grade(omit).failed_gates()
 
 
 def test_from_tlacheck_clean_result_passes():

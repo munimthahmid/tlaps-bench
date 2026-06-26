@@ -776,6 +776,11 @@ def _parse_grader_result(exit_code: int, stdout: str, result: dict) -> None:
     else:
         result["check_verdict"] = "ERROR"
     result["sany_valid"] = "[SANY-INVALID]" not in (stdout or "")
+    # Which gate(s) failed (binary verdict keeps the analysis signal):
+    # A:identity / C:trust ~ tamper/cheat-type, B:discharge ~ incomplete.
+    gm = re.search(r"GATES-FAILED:\s*([^\n]+)", stdout or "")
+    if gm:
+        result["failed_gates"] = [g.strip() for g in gm.group(1).split(",") if g.strip()]
     ob_matches = re.findall(r"All (\d+) obligation", stdout)
     if ob_matches:
         result["obligations"] = int(ob_matches[-1])
