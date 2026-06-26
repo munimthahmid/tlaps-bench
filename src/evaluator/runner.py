@@ -362,6 +362,10 @@ def update_summary(results, output_dir, total_benchmarks, backend_name, level_na
             # canonical parser, vs a proof that simply didn't verify).
             if r.get("sany_valid") is False:
                 notes = ("SANY✗ " + notes).strip()
+            # Name the tamper/admit check(s) behind a CHEATING verdict so a cheat
+            # is distinguishable from an honest incomplete FAIL at a glance.
+            if r.get("check_verdict") == "CHEATING" and r.get("cheat_checks"):
+                notes = (",".join(r["cheat_checks"]) + " " + notes).strip()
             tokens = f"{r.get('input_tokens', 0):,}/{r.get('output_tokens', 0):,}"
             if "obligations" in r:
                 obs = str(r["obligations"])
@@ -767,20 +771,29 @@ def _run_grader_local(
 
 def _parse_grader_result(exit_code: int, stdout: str, result: dict) -> None:
     """Parse grader exit code + stdout into result dict."""
+    # The merged checker is binary: exit 0 = PASS, 1 = FAIL (a cheat is just a
+    # FAIL, not a separate exit code). Anything else is unexpected → ERROR.
     if exit_code == 0:
         result["check_verdict"] = "PASS"
-    elif exit_code == 2:
-        result["check_verdict"] = "CHEATING"
     elif exit_code == 1:
         result["check_verdict"] = "FAIL"
     else:
         result["check_verdict"] = "ERROR"
     result["sany_valid"] = "[SANY-INVALID]" not in (stdout or "")
-    # Which gate(s) failed (binary verdict keeps the analysis signal):
-    # A:identity / C:trust ~ tamper/cheat-type, B:discharge ~ incomplete.
+    # Which gate(s) failed (the grade is binary; this keeps the analysis signal).
     gm = re.search(r"GATES-FAILED:\s*([^\n]+)", stdout or "")
     if gm:
         result["failed_gates"] = [g.strip() for g in gm.group(1).split(",") if g.strip()]
+    # A FAIL whose failing checks include an integrity (tamper/admit) check is a
+    # cheat, not an honest incomplete proof — relabel it for the human-facing
+    # report so the two are distinguishable at a glance. The checker emits
+    # CHEAT-DETECTED with the failing integrity-check names; the grade itself
+    # stays binary (the PASS/FAIL exit code is untouched).
+    if result["check_verdict"] == "FAIL":
+        cm = re.search(r"CHEAT-DETECTED:\s*([^\n]+)", stdout or "")
+        if cm:
+            result["check_verdict"] = "CHEATING"
+            result["cheat_checks"] = [c.strip() for c in cm.group(1).split(",") if c.strip()]
     ob_matches = re.findall(r"All (\d+) obligation", stdout)
     if ob_matches:
         result["obligations"] = int(ob_matches[-1])
