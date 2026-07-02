@@ -17,11 +17,13 @@ from evaluator.termination import (
     INFRA_RULES,
     TerminationContext,
     TerminationReason,
+    agent_startup_failure,
     classify,
     claude_code_result_error,
     codex_turn_failed,
     copilot_session_error,
     is_wall_clock_timeout,
+    startup_error_snippet,
 )
 
 # codex stream cut short by a corrupted/refused request (no turn.completed).
@@ -146,6 +148,7 @@ def test_registry_is_the_extension_point():
     assert codex_turn_failed in INFRA_RULES
     assert claude_code_result_error in INFRA_RULES
     assert copilot_session_error in INFRA_RULES
+    assert agent_startup_failure in INFRA_RULES
 
 
 # --- quota exhaustion: runner-owned, never produced by classify() -----------
@@ -371,3 +374,86 @@ def test_copilot_truncated_is_infra(tmp_path):
 def test_copilot_rule_only_applies_to_copilot(tmp_path):
     p = _write_jsonl(tmp_path / "trunc.jsonl", CP_TRUNCATED)
     assert copilot_session_error(_ctx(p, backend="codex")) is None
+
+
+# --- backend-independent startup rule (empty stream + nonzero exit) ----------
+
+# The observed Copilot startup failures: a 0-byte output.jsonl, agent_exit 1,
+# and the real error only in stderr, wrapped in install/firewall noise.
+COPILOT_STARTUP_STDERR = """\
+added 3 packages in 8s
+[firewall] Allowed: api.githubcopilot.com -> 140.82.113.22
+Error: Failed to load models
+
+Error: Failed to list models
+"""
+
+
+def _startup_ctx(tmp_path, stderr=None, backend="copilot", agent_exit=1, error=""):
+    # A 0-byte event stream, exactly as the observed startup failures left it.
+    jsonl = tmp_path / "output.jsonl"
+    jsonl.write_text("")
+    stderr_path = None
+    if stderr is not None:
+        p = tmp_path / "stderr.txt"
+        p.write_text(stderr)
+        stderr_path = str(p)
+    return TerminationContext(
+        backend=backend, jsonl_path=str(jsonl), agent_exit=agent_exit, error=error, stderr_path=stderr_path
+    )
+
+
+def test_startup_failure_is_infra_for_every_backend(tmp_path):
+    # The rule keys on the failure's shape, not a backend's event vocabulary.
+    for backend in ("copilot", "codex", "claude_code", "litellm"):
+        ctx = _startup_ctx(tmp_path, COPILOT_STARTUP_STDERR, backend=backend)
+        assert classify(ctx) == TerminationReason.INFRA_ERROR, backend
+
+
+def test_startup_error_snippet_quotes_the_real_error(tmp_path):
+    # The label is the actual error line from stderr (first line mentioning
+    # "error"), skipping the npm/firewall noise around it — no hardcoded
+    # signature list to go stale.
+    assert startup_error_snippet(_startup_ctx(tmp_path, COPILOT_STARTUP_STDERR)) == "Error: Failed to load models"
+    dns_stderr = "[firewall] ERROR: no IPs resolved for host 'q.eu-central-1.amazonaws.com'"
+    assert startup_error_snippet(_startup_ctx(tmp_path, dns_stderr)) == dns_stderr
+    # No "error" wording anywhere: fall back to the last non-empty line.
+    assert (
+        startup_error_snippet(_startup_ctx(tmp_path, "added 3 packages in 8s\nAuthentication token rejected\n"))
+        == "Authentication token rejected"
+    )
+    assert startup_error_snippet(_startup_ctx(tmp_path, None)) == "no stderr"
+
+
+def test_reworded_startup_error_is_still_infra(tmp_path):
+    # The snippet labels, it never gates: a reworded CLI error must not
+    # silently turn startup failures back into proof FAILs.
+    ctx = _startup_ctx(tmp_path, "models are having a bad day\n")
+    assert classify(ctx) == TerminationReason.INFRA_ERROR
+    assert startup_error_snippet(ctx) == "models are having a bad day"
+
+
+def test_startup_failure_without_stderr_is_still_infra(tmp_path):
+    # No stderr dump at all (e.g. the container died before writing one).
+    assert classify(_startup_ctx(tmp_path, None)) == TerminationReason.INFRA_ERROR
+
+
+def test_clean_exit_with_empty_stream_is_not_startup_failure(tmp_path):
+    assert classify(_startup_ctx(tmp_path, COPILOT_STARTUP_STDERR, agent_exit=0)) == TerminationReason.OK
+
+
+def test_startup_rule_never_overrides_timeout(tmp_path):
+    # A SIGKILLed run can also leave an empty stream + nonzero exit; the
+    # wall-clock timeout precheck must win.
+    ctx = _startup_ctx(tmp_path, None, agent_exit=-1, error="copilot timeout after 300s")
+    assert classify(ctx) == TerminationReason.TIMEOUT
+
+
+def test_noisy_stderr_on_clean_run_is_ok(tmp_path):
+    # install/firewall noise on stderr is normal — a run that reached a clean
+    # terminal event stays OK regardless of what stderr says.
+    p = _write_jsonl(tmp_path / "done.jsonl", CP_COMPLETED)
+    sp = tmp_path / "stderr.txt"
+    sp.write_text(COPILOT_STARTUP_STDERR)  # worst case: even a scary stderr
+    ctx = TerminationContext(backend="copilot", jsonl_path=p, agent_exit=0, stderr_path=str(sp))
+    assert classify(ctx) == TerminationReason.OK

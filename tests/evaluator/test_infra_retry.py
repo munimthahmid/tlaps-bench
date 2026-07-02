@@ -1,0 +1,307 @@
+"""runner infra-retry loop — retry transient startup failures, never real attempts.
+
+A startup failure (INFRA_ERROR + 0 output tokens: the CLI died before the model
+did any work) must be retried on a fresh workspace, and only the final genuine
+attempt graded; exhaustion is ERROR/INFRA_ERROR, never a proof FAIL. Fakes stand
+in for the agent and grader, so no container, real backend or tlapm is needed.
+
+Run: PYTHONPATH=src python3 -m pytest tests/evaluator/test_infra_retry.py
+"""
+
+import json
+import os
+
+from evaluator import runner
+from evaluator.termination import TerminationReason
+
+BENCH_TEXT = "---- MODULE Bar ----\n====\n"
+
+# One clean copilot terminal event: classifies as a genuine, completed run.
+CLEAN_EVENTS = [{"type": "result", "exitCode": 0}]
+
+# The observed startup shape: nonzero exit, no events, error only on stderr.
+STARTUP = {"exit": 1, "stderr": "Error: Failed to load models\n\nError: Failed to list models\n"}
+# A genuine attempt whose proof simply didn't verify.
+GENUINE_FAIL = {"exit": 0, "events": CLEAN_EVENTS, "out_tokens": 500}
+
+
+class _ScriptedBackend:
+    """Backend whose per-attempt behavior is scripted (see _install_agent)."""
+
+    name = "copilot"
+
+    def __init__(self):
+        self.out_tokens = 0  # set by the fake agent for the current attempt
+
+    def parse_output(self, jsonl_path):
+        return ("", 0, self.out_tokens)
+
+    def detect_quota_block(self, jsonl_path):
+        return None
+
+
+class _FakeMode:
+    name = "proof-completion"
+
+    def __init__(self, bench_dir):
+        self._bench_dir = bench_dir
+
+    def benchmark_dir(self):
+        return self._bench_dir
+
+    def get_dependencies(self, benchmark_path):
+        return []
+
+    def checker_binary_path(self):
+        return "/bin/true"
+
+    def build_prompt(self, basename, tlapm_path, tlapm_lib):
+        return "prove it"
+
+
+def _work_item(tmp_path, backend, infra_retries=3):
+    bench_dir = tmp_path / "bench"
+    bench_path = bench_dir / "Foo" / "Bar.tla"
+    os.makedirs(bench_path.parent, exist_ok=True)
+    bench_path.write_text(BENCH_TEXT)
+    return runner.WorkItem(
+        benchmark_path=str(bench_path),
+        output_dir=str(tmp_path / "out"),
+        timeout=10,
+        check_timeout=10,
+        backend=backend,  # ty:ignore[invalid-argument-type]
+        mode=_FakeMode(str(bench_dir)),  # ty:ignore[invalid-argument-type]
+        tlapm_path="/bin/true",
+        tlapm_lib="",
+        infra_retries=infra_retries,
+    )
+
+
+def _install_agent(monkeypatch, backend, attempts):
+    """Patch _run_agent_local with a scripted agent: one spec dict per attempt
+    ({"exit": int, "events": [...], "stderr": str, "out_tokens": int,
+    "error": str, "mutate": fn(workspace)})."""
+    calls = {"n": 0, "workspaces": [], "canonical_dirs": []}
+
+    def fake_run(
+        item, backend_, mode, workspace, agent_dir, agent_jsonl, prompt, result, checker_bin, canonical_dir=None
+    ):
+        spec = attempts[calls["n"]]
+        calls["n"] += 1
+        calls["workspaces"].append(workspace)
+        calls["canonical_dirs"].append(canonical_dir)
+        with open(agent_jsonl, "w") as f:
+            for ev in spec.get("events", []):
+                f.write(json.dumps(ev) + "\n")
+        if spec.get("stderr"):
+            with open(os.path.join(agent_dir, "stderr.txt"), "w") as f:
+                f.write(spec["stderr"])
+        result["agent_exit"] = spec.get("exit", 0)
+        if spec.get("error"):
+            result["error"] = spec["error"]
+        backend.out_tokens = spec.get("out_tokens", 0)
+        if "mutate" in spec:
+            spec["mutate"](workspace)
+        if "mutate_canonical" in spec:
+            spec["mutate_canonical"](canonical_dir)
+
+    monkeypatch.setattr(runner, "_run_agent_local", fake_run)
+    return calls
+
+
+def _install_grader(monkeypatch, verdict="FAIL", inspect_canonical=None):
+    calls = {"n": 0, "canonical_dirs": []}
+
+    def fake_grader(item, workspace, basename, grading_dir, check_result_path, result, canonical_dir=None):
+        calls["n"] += 1
+        calls["canonical_dirs"].append(canonical_dir)
+        if inspect_canonical:
+            inspect_canonical(canonical_dir)
+        result["check_verdict"] = verdict
+
+    monkeypatch.setattr(runner, "_run_grader_local", fake_grader)
+    return calls
+
+
+def _no_sleep(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(runner.time, "sleep", lambda s: sleeps.append(s))
+    return sleeps
+
+
+def test_startup_failure_retried_and_final_attempt_graded(tmp_path, monkeypatch):
+    backend = _ScriptedBackend()
+    agent = _install_agent(monkeypatch, backend, [STARTUP, GENUINE_FAIL])
+    grader = _install_grader(monkeypatch, verdict="FAIL")
+    sleeps = _no_sleep(monkeypatch)
+    result = runner.run_single_benchmark(_work_item(tmp_path, backend))
+    assert agent["n"] == 2
+    assert grader["n"] == 1  # only the genuine attempt is graded
+    assert result["check_verdict"] == "FAIL"
+    assert result["termination_reason"] == TerminationReason.OK
+    assert result["infra_retries"] == 1
+    assert result["infra_retry_reasons"] == ["Error: Failed to load models"]
+    assert len(sleeps) == 1 and sleeps[0] >= 15  # first backoff step (plus jitter)
+    # Failed attempt's evidence is stashed; the retry metadata reaches disk.
+    out = tmp_path / "out" / "Foo" / "Bar"
+    assert "Failed to load models" in (out / "agent" / "attempts" / "attempt-0" / "stderr.txt").read_text()
+    saved = json.loads((out / "result.json").read_text())
+    assert saved["infra_retries"] == 1
+
+
+def test_retry_exhaustion_is_error_not_fail(tmp_path, monkeypatch):
+    backend = _ScriptedBackend()
+    agent = _install_agent(monkeypatch, backend, [STARTUP] * 3)
+    grader = _install_grader(monkeypatch)
+    _no_sleep(monkeypatch)
+    result = runner.run_single_benchmark(_work_item(tmp_path, backend, infra_retries=2))
+    assert agent["n"] == 3
+    assert grader["n"] == 0  # never grade a run the model never attempted
+    assert result["check_verdict"] == "ERROR"
+    assert result["termination_reason"] == TerminationReason.INFRA_ERROR
+    assert result["infra_retries"] == 2
+    assert result["infra_retry_reasons"] == ["Error: Failed to load models"] * 3
+    assert "exhausted infra retries" in result["error"]
+
+
+def test_genuine_attempt_never_retried(tmp_path, monkeypatch):
+    backend = _ScriptedBackend()
+    agent = _install_agent(monkeypatch, backend, [GENUINE_FAIL])
+    grader = _install_grader(monkeypatch)
+    sleeps = _no_sleep(monkeypatch)
+    result = runner.run_single_benchmark(_work_item(tmp_path, backend))
+    assert agent["n"] == 1 and grader["n"] == 1
+    assert result["check_verdict"] == "FAIL"
+    assert "infra_retries" not in result
+    assert sleeps == []
+
+
+def test_midrun_infra_with_tokens_not_retried(tmp_path, monkeypatch):
+    # INFRA_ERROR but the model DID work (tokens > 0): classified for downstream
+    # filtering, but never re-run — the attempt was genuine.
+    cut_off = {"exit": 1, "events": [{"type": "assistant.message", "data": {"content": "working"}}], "out_tokens": 42}
+    backend = _ScriptedBackend()
+    agent = _install_agent(monkeypatch, backend, [cut_off])
+    grader = _install_grader(monkeypatch)
+    _no_sleep(monkeypatch)
+    result = runner.run_single_benchmark(_work_item(tmp_path, backend))
+    assert agent["n"] == 1 and grader["n"] == 1
+    assert result["termination_reason"] == TerminationReason.INFRA_ERROR
+    assert "infra_retries" not in result
+
+
+def test_wall_clock_timeout_not_retried(tmp_path, monkeypatch):
+    backend = _ScriptedBackend()
+    timeout = {"exit": -1, "error": "copilot timeout after 10s"}
+    agent = _install_agent(monkeypatch, backend, [timeout])
+    grader = _install_grader(monkeypatch)
+    sleeps = _no_sleep(monkeypatch)
+    result = runner.run_single_benchmark(_work_item(tmp_path, backend))
+    assert agent["n"] == 1 and grader["n"] == 1
+    assert result["termination_reason"] == TerminationReason.TIMEOUT
+    assert sleeps == []
+
+
+def test_infra_retries_zero_disables_retrying(tmp_path, monkeypatch):
+    # 0 = no retries, but the no-attempt run still ends ERROR, never a proof FAIL.
+    backend = _ScriptedBackend()
+    agent = _install_agent(monkeypatch, backend, [STARTUP])
+    grader = _install_grader(monkeypatch)
+    sleeps = _no_sleep(monkeypatch)
+    result = runner.run_single_benchmark(_work_item(tmp_path, backend, infra_retries=0))
+    assert agent["n"] == 1 and grader["n"] == 0
+    assert result["check_verdict"] == "ERROR"
+    assert result["termination_reason"] == TerminationReason.INFRA_ERROR
+    assert result["infra_retries"] == 0
+    assert sleeps == []
+
+
+def test_retry_runs_on_fresh_workspace(tmp_path, monkeypatch):
+    # A failed attempt's partial edits must not leak into the retry: attempt 1
+    # scribbles on the benchmark, attempt 2 must see a pristine copy.
+    seen = []
+
+    def scribble(workspace):
+        path = os.path.join(workspace, "Bar.tla")
+        with open(path) as f:
+            seen.append(f.read())
+        with open(path, "w") as f:
+            f.write("TAMPERED")
+
+    def check(workspace):
+        with open(os.path.join(workspace, "Bar.tla")) as f:
+            seen.append(f.read())
+
+    backend = _ScriptedBackend()
+    attempts = [dict(STARTUP, mutate=scribble), dict(GENUINE_FAIL, mutate=check)]
+    agent = _install_agent(monkeypatch, backend, attempts)
+    _install_grader(monkeypatch)
+    _no_sleep(monkeypatch)
+    runner.run_single_benchmark(_work_item(tmp_path, backend))
+    assert agent["workspaces"][0] != agent["workspaces"][1]
+    assert seen == [BENCH_TEXT, BENCH_TEXT]
+
+
+def test_retry_runs_on_fresh_canonical_snapshot(tmp_path, monkeypatch):
+    # In local mode the agent can write to TLAPS_BENCHMARK_DIR. A failed
+    # attempt's canonical snapshot must not leak into the retry or grader.
+    seen = []
+
+    def taint(canonical_dir):
+        path = os.path.join(canonical_dir, "Bar.tla")
+        with open(path) as f:
+            seen.append(f.read())
+        with open(path, "w") as f:
+            f.write("TAINTED")
+
+    def check(canonical_dir):
+        with open(os.path.join(canonical_dir, "Bar.tla")) as f:
+            seen.append(f.read())
+
+    backend = _ScriptedBackend()
+    attempts = [dict(STARTUP, mutate_canonical=taint), dict(GENUINE_FAIL, mutate_canonical=check)]
+    agent = _install_agent(monkeypatch, backend, attempts)
+    grader = _install_grader(monkeypatch, inspect_canonical=check)
+    _no_sleep(monkeypatch)
+
+    runner.run_single_benchmark(_work_item(tmp_path, backend))
+
+    assert agent["canonical_dirs"][0] != agent["canonical_dirs"][1]
+    assert grader["canonical_dirs"] == [agent["canonical_dirs"][1]]
+    assert seen == [BENCH_TEXT, BENCH_TEXT, BENCH_TEXT]
+
+
+def test_quota_exhaustion_is_not_infra_retried(tmp_path, monkeypatch):
+    # Quota owns its own retry budget: once it reports exhaustion the infra loop
+    # must stop dead — no reclassification, no extra attempts.
+    backend = _ScriptedBackend()
+    agent = _install_agent(monkeypatch, backend, [STARTUP] * 4)
+    grader = _install_grader(monkeypatch)
+    _no_sleep(monkeypatch)
+    monkeypatch.setattr(runner.quota, "run_with_quota_retry", lambda run, block, **k: False)
+    result = runner.run_single_benchmark(_work_item(tmp_path, backend))
+    assert agent["n"] == 0  # the quota stub swallowed the run entirely
+    assert grader["n"] == 0
+    assert result["check_verdict"] == "ERROR"
+    assert result["termination_reason"] == TerminationReason.QUOTA_EXHAUSTED
+    assert "infra_retries" not in result
+
+
+def test_quota_retry_clears_stale_stderr_before_final_run(tmp_path, monkeypatch):
+    # quota.run_with_quota_retry can invoke the agent multiple times inside one
+    # infra attempt. Stderr from the quota-blocked run must not label the final run.
+    backend = _ScriptedBackend()
+    blocks = iter([1, None])
+    monkeypatch.setattr(backend, "detect_quota_block", lambda _jsonl: next(blocks))
+    agent = _install_agent(monkeypatch, backend, [{"exit": 1, "stderr": "old quota/stderr noise\n"}, {"exit": 1}])
+    grader = _install_grader(monkeypatch)
+    _no_sleep(monkeypatch)
+
+    result = runner.run_single_benchmark(_work_item(tmp_path, backend, infra_retries=0))
+
+    assert agent["n"] == 2
+    assert grader["n"] == 0
+    assert result["check_verdict"] == "ERROR"
+    assert result["termination_reason"] == TerminationReason.INFRA_ERROR
+    assert result["infra_retry_reasons"] == ["no stderr"]
+    assert not (tmp_path / "out" / "Foo" / "Bar" / "agent" / "stderr.txt").exists()

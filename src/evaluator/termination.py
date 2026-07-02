@@ -5,20 +5,23 @@ A benchmark verdict (PASS/FAIL) is a capability signal only if the agent
 actually got to make a genuine attempt. When the run is cut short by
 infrastructure — a corrupted/refused API request, a dropped stream, a server
 overload — the resulting FAIL says nothing about the model. We tag such runs
-with ``termination_reason = INFRA_ERROR`` so they can be filtered out (and,
-later, auto-retried) instead of being read as genuine failures.
+with ``termination_reason = INFRA_ERROR`` so they can be filtered out (and
+auto-retried by the runner when the model did no work) instead of being read
+as genuine failures.
 
 :func:`classify` first checks for a wall-clock timeout (a backend-independent
 LIMIT — the model was working, it just ran out of time — reported as TIMEOUT,
 never INFRA_ERROR), then runs a registry of INFRA RULES (criteria). Each rule
 inspects a ``TerminationContext`` and returns a reason if it fires, else
-``None``; the first that fires wins. There is one rule per backend today
+``None``; the first that fires wins. There is one rule per backend
 (:func:`codex_turn_failed`, :func:`claude_code_result_error`,
 :func:`copilot_session_error`), each branching on ``ctx.backend`` to read its
-own event vocabulary. Add more by appending to :data:`INFRA_RULES`.
+own event vocabulary, plus one backend-independent startup rule
+(:func:`agent_startup_failure`) for the CLI dying before emitting a single
+event. Add more by appending to :data:`INFRA_RULES`.
 
-This module only CLASSIFIES. Acting on the classification (e.g. auto-retrying
-an INFRA_ERROR run) is intentionally left to the caller.
+This module only CLASSIFIES. Acting on the classification (the runner auto-
+retries an INFRA_ERROR run whose model did no work) is left to the caller.
 """
 
 from __future__ import annotations
@@ -60,18 +63,27 @@ class TerminationContext:
     (empty list on a missing/unreadable file), so rules that don't need it pay
     nothing. ``agent_exit`` and ``error`` are the runner's already-recorded
     fields, available to rules that key off them instead of the stream.
+    ``stderr()`` lazily reads the agent's stderr dump ("" when absent), where a
+    startup failure often leaves its only evidence.
     """
 
     backend: str
     jsonl_path: str | None
     agent_exit: int | None = None
     error: str = ""
+    stderr_path: str | None = None
     _events: list | None = None
+    _stderr: str | None = None
 
     def events(self) -> list:
         if self._events is None:
             self._events = _read_events(self.jsonl_path)
         return self._events
+
+    def stderr(self) -> str:
+        if self._stderr is None:
+            self._stderr = _read_text(self.stderr_path)
+        return self._stderr
 
 
 def _read_events(path: str | None) -> list:
@@ -93,6 +105,17 @@ def _read_events(path: str | None) -> list:
     except FileNotFoundError:
         return []
     return out
+
+
+def _read_text(path: str | None) -> str:
+    """Contents of a text file, tolerantly ("" when unset/absent/unreadable)."""
+    if not path:
+        return ""
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return ""
 
 
 # A rule inspects the context and returns a TerminationReason if it fires, else
@@ -196,13 +219,39 @@ def copilot_session_error(ctx: TerminationContext) -> str | None:
     return TerminationReason.INFRA_ERROR
 
 
-# Registry of INFRA_ERROR criteria. One rule per backend today; append more here
-# (other backends, or additional patterns for an existing one) — classify()
-# returns the first that fires. This list IS the extension point.
+def agent_startup_failure(ctx: TerminationContext) -> str | None:
+    """Backend-independent rule: the CLI died before emitting a single event
+    (observed on Copilot: transient model-list/auth/DNS startup failures with a
+    0-byte stream, nonzero exit, and the error only on stderr). Keys on that
+    shape alone — never on the stderr wording — covering the per-backend rules'
+    empty-stream blind spot for every backend. A wall-clock timeout leaves the
+    same shape; classify() checks it first.
+    """
+    if ctx.events():
+        return None
+    if not ctx.agent_exit:  # 0 or None: clean/unknown exit, not a startup death
+        return None
+    return TerminationReason.INFRA_ERROR
+
+
+def startup_error_snippet(ctx: TerminationContext) -> str:
+    """Label for ``infra_retry_reasons``: the first stderr line mentioning
+    "error", else the last non-empty line. Diagnostic only — never gates a retry."""
+    lines = [ln.strip() for ln in ctx.stderr().splitlines() if ln.strip()]
+    if not lines:
+        return "no stderr"
+    return next((ln for ln in lines if "error" in ln.lower()), lines[-1])[:120]
+
+
+# Registry of INFRA_ERROR criteria. One rule per backend, then the backend-
+# independent startup rule as fallback; append more here (other backends, or
+# additional patterns for an existing one) — classify() returns the first that
+# fires. This list IS the extension point.
 INFRA_RULES: list[Rule] = [
     codex_turn_failed,
     claude_code_result_error,
     copilot_session_error,
+    agent_startup_failure,
 ]
 
 

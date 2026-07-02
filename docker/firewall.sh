@@ -29,10 +29,20 @@ IFS=',' read -ra HOSTS <<< "$FIREWALL_HOSTS"
 for host in "${HOSTS[@]}"; do
     host=$(echo "$host" | xargs)  # trim whitespace
     HOST_COUNT=0
-    for ip in $(dig +short "$host" 2>/dev/null | grep -E '^[0-9]'); do
-        iptables -A OUTPUT -d "$ip" -p tcp --dport 443 -j ACCEPT
-        echo "[firewall] Allowed: $host -> $ip"
-        HOST_COUNT=$((HOST_COUNT + 1))
+    # Retry transient DNS misses — one empty dig answer for a single host must
+    # not abort the whole container.
+    for dns_attempt in 1 2 3; do
+        for ip in $(dig +short "$host" 2>/dev/null | grep -E '^[0-9]'); do
+            iptables -A OUTPUT -d "$ip" -p tcp --dport 443 -j ACCEPT
+            echo "[firewall] Allowed: $host -> $ip"
+            HOST_COUNT=$((HOST_COUNT + 1))
+        done
+        if [ "$HOST_COUNT" -gt 0 ]; then
+            break
+        fi
+        if [ "$dns_attempt" -lt 3 ]; then
+            sleep 2
+        fi
     done
     if [ "$HOST_COUNT" -eq 0 ]; then
         echo "[firewall] ERROR: no IPs resolved for host '$host'" >&2
