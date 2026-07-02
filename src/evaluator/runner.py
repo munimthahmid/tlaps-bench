@@ -18,6 +18,7 @@ import contextlib
 import fcntl
 import json
 import os
+import random
 import re
 import select
 import shlex
@@ -37,7 +38,7 @@ from evaluator.backends import get_backend, list_backends
 from evaluator.backends.base import AgentBackend
 from evaluator.modes import get_mode, list_modes
 from evaluator.modes.base import Mode
-from evaluator.termination import TerminationContext, TerminationReason, classify
+from evaluator.termination import TerminationContext, TerminationReason, classify, startup_error_snippet
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # File at <repo>/src/evaluator/runner.py — ascend two levels for repo root.
@@ -47,6 +48,10 @@ VERDICT_ICONS = {"PASS": "✅", "FAIL": "❌", "CHEATING": "⚠️", "TIMEOUT": 
 
 # Set to True to stream agent output to terminal during container runs
 STREAM_AGENT_OUTPUT = True
+
+# Backoff between infra retries (seconds); the last value repeats. Short: the
+# observed startup blips clear within seconds-to-minutes.
+INFRA_RETRY_BACKOFF = (15, 30, 60)
 
 
 def resolve_paths():
@@ -229,6 +234,21 @@ class WorkItem:
     min_free_gb: float = 0
     # Container mode: run agent inside Docker container
     use_container: bool = False
+    # Extra agent attempts after a transient startup/infra failure (INFRA_ERROR
+    # with 0 output tokens); 0 disables retrying (the failure still ends ERROR).
+    infra_retries: int = 3
+
+
+def _make_canonical_dir(name_no_ext: str, benchmark_path: str, basename: str, deps: list[str]) -> str:
+    canonical_dir = tempfile.mkdtemp(prefix=f"canon_{name_no_ext}_")
+    try:
+        shutil.copy2(benchmark_path, os.path.join(canonical_dir, basename))
+        for dep in deps:
+            shutil.copy2(dep, os.path.join(canonical_dir, os.path.basename(dep)))
+        return canonical_dir
+    except Exception:
+        shutil.rmtree(canonical_dir, ignore_errors=True)
+        raise
 
 
 def update_summary(results, output_dir, total_benchmarks, backend_name, mode_name):
@@ -349,7 +369,7 @@ def run_single_benchmark(item: WorkItem):
         result["termination_reason"] = TerminationReason.QUOTA_EXHAUSTED
         return result
 
-    workspace = tempfile.mkdtemp(prefix=f"{backend.name}_bench_{name_no_ext}_")
+    workspace = None
     canonical_dir = None
     try:
         # Resolve dependencies ONCE — the EXTENDS-closure walk parses files and may
@@ -357,47 +377,11 @@ def run_single_benchmark(item: WorkItem):
         # call would just repeat that work and double the stderr noise.
         deps = mode.get_dependencies(item.benchmark_path)
 
-        # Copy benchmark + dependencies into the isolated workspace
-        shutil.copy2(item.benchmark_path, os.path.join(workspace, basename))
-        for dep in deps:
-            shutil.copy2(dep, os.path.join(workspace, os.path.basename(dep)))
-
-        # Canonical snapshot: the SINGLE baseline that BOTH the agent's
-        # in-workspace self-check and the grader read, so the two oracles can't
-        # diverge (a git --amend / rm -rf .git in the workspace no longer weakens
-        # the self-check below the grader). Holds exactly the files the workspace
-        # started with ({target}.tla + deps) — NOT the whole module dir, which
-        # would leak sibling task files into the agent's sandbox. In container
-        # mode it is bind-mounted ``:ro`` (tamper-proof); on the host the agent
-        # could touch this copy, but since both oracles read it the verdicts stay
-        # consistent regardless. (Not chmod'd read-only: tlapm/SANY write a cache
-        # dir beside the source, which a read-only dir would break.)
-        canonical_dir = tempfile.mkdtemp(prefix=f"canon_{name_no_ext}_")
-        shutil.copy2(item.benchmark_path, os.path.join(canonical_dir, basename))
-        for dep in deps:
-            shutil.copy2(dep, os.path.join(canonical_dir, os.path.basename(dep)))
-
-        # Init git repo (baseline for cheating check)
-        subprocess.run(["git", "init"], capture_output=True, cwd=workspace)
-        subprocess.run(["git", "add", "."], capture_output=True, cwd=workspace)
-        subprocess.run(
-            ["git", "commit", "-m", "initial benchmark"],
-            capture_output=True,
-            cwd=workspace,
-            env={
-                **os.environ,
-                "GIT_AUTHOR_NAME": "bench",
-                "GIT_AUTHOR_EMAIL": "bench@bench",
-                "GIT_COMMITTER_NAME": "bench",
-                "GIT_COMMITTER_EMAIL": "bench@bench",
-            },
-        )
-
         checker_bin = mode.checker_binary_path()
 
         # Save input artifacts
         shutil.copy2(item.benchmark_path, os.path.join(input_dir, "benchmark.tla"))
-        for dep in mode.get_dependencies(item.benchmark_path):
+        for dep in deps:
             shutil.copy2(dep, os.path.join(input_dir, os.path.basename(dep)))
 
         # Build prompt
@@ -407,43 +391,130 @@ def run_single_benchmark(item: WorkItem):
 
         # Run the agent
         agent_jsonl = os.path.join(agent_dir, "output.jsonl")
+        agent_stderr = os.path.join(agent_dir, "stderr.txt")
 
-        wait_for_memory(item.min_free_gb, 120, log_prefix=f"[{name_no_ext}] ")
-
-        # Run the agent, sleeping through any hard provider usage-limit cap that
-        # the proactive gate (above) can't see (see quota.run_with_quota_retry).
         # _run_once accumulates only active agent time, so time_secs excludes the
-        # retry sleeps (which can be hours).
+        # quota retry sleeps (which can be hours) and the infra backoff below.
         active_secs = 0.0
 
-        def _run_once():
-            nonlocal active_secs
-            result["error"] = ""
-            t0 = time.time()
-            if item.use_container:
-                _run_agent_container(item, backend, workspace, agent_dir, agent_jsonl, prompt, result, canonical_dir)
-            else:
-                _run_agent_local(
-                    item, backend, mode, workspace, agent_dir, agent_jsonl, prompt, result, checker_bin, canonical_dir
-                )
-            active_secs += time.time() - t0
+        # Infra retry loop: a run cut short before the model did ANY work
+        # (INFRA_ERROR + 0 output tokens) says nothing about the model, so it is
+        # retried on a fresh workspace instead of graded. Everything else gets
+        # exactly one attempt.
+        quota_exhausted = False
+        infra_retriable = False
+        infra_reasons: list[str] = []
+        for attempt in range(max(item.infra_retries, 0) + 1):
+            # Canonical snapshot for THIS attempt: both the agent self-check and
+            # grader read it, and retries get a fresh copy even in local mode
+            # where the agent can write to the host path.
+            canonical_dir = _make_canonical_dir(name_no_ext, item.benchmark_path, basename, deps)
 
-        quota_exhausted = not quota.run_with_quota_retry(
-            _run_once,
-            lambda: backend.detect_quota_block(agent_jsonl),
-            log_prefix=f"[{name_no_ext}] ",
-        )
+            # Copy benchmark + dependencies into a FRESH isolated workspace per
+            # attempt, so a failed attempt's partial edits can't leak into a retry.
+            workspace = tempfile.mkdtemp(prefix=f"{backend.name}_bench_{name_no_ext}_")
+            shutil.copy2(item.benchmark_path, os.path.join(workspace, basename))
+            for dep in deps:
+                shutil.copy2(dep, os.path.join(workspace, os.path.basename(dep)))
+
+            # Init git repo (baseline for cheating check)
+            subprocess.run(["git", "init"], capture_output=True, cwd=workspace)
+            subprocess.run(["git", "add", "."], capture_output=True, cwd=workspace)
+            subprocess.run(
+                ["git", "commit", "-m", "initial benchmark"],
+                capture_output=True,
+                cwd=workspace,
+                env={
+                    **os.environ,
+                    "GIT_AUTHOR_NAME": "bench",
+                    "GIT_AUTHOR_EMAIL": "bench@bench",
+                    "GIT_COMMITTER_NAME": "bench",
+                    "GIT_COMMITTER_EMAIL": "bench@bench",
+                },
+            )
+
+            wait_for_memory(item.min_free_gb, 120, log_prefix=f"[{name_no_ext}] ")
+
+            # Run the agent, sleeping through any hard provider usage-limit cap that
+            # the proactive gate (above) can't see (see quota.run_with_quota_retry).
+            # Defaults keep the closure bound to this outer infra attempt.
+            def _run_once(workspace=workspace, canonical_dir=canonical_dir):
+                nonlocal active_secs
+                result["error"] = ""
+                with contextlib.suppress(FileNotFoundError):
+                    os.remove(agent_stderr)
+                t0 = time.time()
+                if item.use_container:
+                    _run_agent_container(
+                        item, backend, workspace, agent_dir, agent_jsonl, prompt, result, canonical_dir
+                    )
+                else:
+                    _run_agent_local(
+                        item,
+                        backend,
+                        mode,
+                        workspace,
+                        agent_dir,
+                        agent_jsonl,
+                        prompt,
+                        result,
+                        checker_bin,
+                        canonical_dir,
+                    )
+                active_secs += time.time() - t0
+
+            quota_exhausted = not quota.run_with_quota_retry(
+                _run_once,
+                lambda: backend.detect_quota_block(agent_jsonl),
+                log_prefix=f"[{name_no_ext}] ",
+            )
+            result["time_secs"] = active_secs
+
+            # Parse agent output and save artifacts on every path — including quota
+            # exhaustion — so the result dir keeps a consistent shape and records any
+            # tokens the agent did emit (rather than forcing them to 0).
+            transcript, input_tokens, output_tokens = backend.parse_output(agent_jsonl)
+            result["input_tokens"] = input_tokens
+            result["output_tokens"] = output_tokens
+
+            if quota_exhausted:
+                break  # quota owns its own retry budget — never infra-retried
+
+            # Tag how the run terminated so an INFRA_ERROR (agent cut short by
+            # infrastructure, not a genuine attempt) is distinguishable from a
+            # real FAIL — and, when the model did no work, retried right here.
+            ctx = TerminationContext(
+                backend=backend.name,
+                jsonl_path=agent_jsonl,
+                agent_exit=result.get("agent_exit"),
+                error=result.get("error", ""),
+                stderr_path=agent_stderr,
+            )
+            result["termination_reason"] = classify(ctx)
+
+            # A genuine attempt (any output tokens) is never re-run.
+            infra_retriable = result["termination_reason"] == TerminationReason.INFRA_ERROR and output_tokens == 0
+            if not infra_retriable:
+                break
+            infra_reasons.append(startup_error_snippet(ctx))
+            if attempt >= item.infra_retries:
+                break  # out of retries — recorded below as ERROR, not graded
+
+            _stash_failed_attempt(agent_dir, attempt)
+            shutil.rmtree(workspace, ignore_errors=True)
+            workspace = None
+            shutil.rmtree(canonical_dir, ignore_errors=True)
+            canonical_dir = None
+            base = INFRA_RETRY_BACKOFF[min(attempt, len(INFRA_RETRY_BACKOFF) - 1)]
+            delay = base + random.uniform(0, base / 2)  # jitter: keep --jobs workers out of lockstep
+            print(
+                f"[{name_no_ext}] transient infra failure ({infra_reasons[-1]}) — "
+                f"retrying in {delay:.0f}s (retry {attempt + 1}/{item.infra_retries})",
+                flush=True,
+            )
+            time.sleep(delay)
 
         elapsed = active_secs
-        result["time_secs"] = elapsed
-
-        # Parse agent output and save artifacts on every path — including quota
-        # exhaustion — so the result dir keeps a consistent shape and records any
-        # tokens the agent did emit (rather than forcing them to 0).
-        transcript, input_tokens, output_tokens = backend.parse_output(agent_jsonl)
-        result["input_tokens"] = input_tokens
-        result["output_tokens"] = output_tokens
-
         with open(os.path.join(agent_dir, "transcript.txt"), "w") as f:
             f.write(f"Benchmark: {rel_path}\n")
             f.write(f"Time: {elapsed:.0f}s\n")
@@ -459,6 +530,10 @@ def run_single_benchmark(item: WorkItem):
         if os.path.isfile(agent_check_file):
             shutil.copy2(agent_check_file, os.path.join(grading_dir, "agent_check.result"))
 
+        if infra_reasons:
+            result["infra_retries"] = attempt  # retries performed (0-based final attempt index)
+            result["infra_retry_reasons"] = infra_reasons
+
         if quota_exhausted:
             # Provider hard-capped us past the retry budget. Mark ERROR (retriable
             # via --resume) and skip grading; the artifacts above keep the result
@@ -473,18 +548,15 @@ def run_single_benchmark(item: WorkItem):
                 json.dump(result, f, indent=2)
             return result
 
-        # Tag how the run terminated so an INFRA_ERROR (agent cut short by
-        # infrastructure, not a genuine attempt) is distinguishable from a real
-        # FAIL downstream. Only genuine, completed runs reach here — a quota-
-        # exhausted run returned above. Classification only — no retry here.
-        result["termination_reason"] = classify(
-            TerminationContext(
-                backend=backend.name,
-                jsonl_path=agent_jsonl,
-                agent_exit=result.get("agent_exit"),
-                error=result.get("error", ""),
-            )
-        )
+        if infra_retriable:
+            # Out of retries with no genuine attempt made: grading the untouched
+            # workspace would turn infra noise into a proof verdict (FAIL, or even
+            # a bogus PASS). Mark ERROR (retriable via --resume), skip the grader.
+            result["check_verdict"] = "ERROR"
+            result["error"] = f"startup/infra failure ({infra_reasons[-1]}); exhausted infra retries"
+            with open(os.path.join(result_dir, "result.json"), "w") as f:
+                json.dump(result, f, indent=2)
+            return result
 
         # Run grader
         check_result_path = os.path.join(grading_dir, "check.result")
@@ -498,11 +570,23 @@ def run_single_benchmark(item: WorkItem):
             json.dump(result, f, indent=2)
 
     finally:
-        shutil.rmtree(workspace, ignore_errors=True)
+        if workspace:
+            shutil.rmtree(workspace, ignore_errors=True)
         if canonical_dir:
             shutil.rmtree(canonical_dir, ignore_errors=True)
 
     return result
+
+
+def _stash_failed_attempt(agent_dir: str, attempt: int) -> None:
+    """Move a failed attempt's raw outputs to agent/attempts/attempt-N/: the
+    retry starts clean (no stale stderr.txt) and the evidence stays debuggable."""
+    dest = os.path.join(agent_dir, "attempts", f"attempt-{attempt}")
+    os.makedirs(dest, exist_ok=True)
+    for fname in ("output.jsonl", "stderr.txt"):
+        src = os.path.join(agent_dir, fname)
+        if os.path.isfile(src):
+            shutil.move(src, os.path.join(dest, fname))
 
 
 def _run_agent_container(
@@ -921,6 +1005,14 @@ def main():
         "(0 = off). Use on a no-swap host shared with another heavy run.",
     )
     parser.add_argument(
+        "--infra-retries",
+        type=int,
+        default=3,
+        help="Extra agent attempts after a transient startup/infrastructure failure "
+        "(agent died with 0 output tokens), so 3 = up to 4 attempts total "
+        "(default: 3; 0 = no retries, the failure still ends as ERROR)",
+    )
+    parser.add_argument(
         "--no-container",
         action="store_true",
         help="Run agent locally instead of inside a Docker container",
@@ -1068,6 +1160,7 @@ def main():
                 quota_max_waits=args.quota_max_waits,
                 min_free_gb=args.min_free_gb,
                 use_container=use_container,
+                infra_retries=args.infra_retries,
             )
         )
 

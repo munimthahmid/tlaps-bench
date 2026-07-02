@@ -120,6 +120,7 @@ uv run tlaps-bench run [flags]
 | `--check-timeout` | `600` | Per-benchmark checker (tlapm) timeout in seconds |
 | `--output-dir` | auto-generated | Output directory |
 | `--resume` | off | Skip benchmarks already marked PASS |
+| `--infra-retries` | `3` | Extra attempts after a transient agent startup/infra failure (0 output tokens); `0` = no retries |
 | `--force-build` | off | Rebuild the Docker image |
 | `--no-container` | off | Run without Docker (requires native setup) |
 
