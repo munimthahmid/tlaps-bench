@@ -1,0 +1,6 @@
+# Continuation
+
+This session continues your own earlier, incomplete attempt at the task below.
+{benchmark_basename} in the working directory already contains the partial proof from that attempt; it does not fully verify yet.
+Read the file's current state first, keep the parts of the proof that already work, and repair or replace the parts that fail — do not discard the previous work and restart unless the existing approach is unsalvageable.
+Everything below (task, tools, constraints) applies unchanged.
