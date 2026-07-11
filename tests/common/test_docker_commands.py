@@ -62,6 +62,9 @@ class TestCheckDockerDispatch:
             benchmark_dir = None
             sany_only = False
             no_cache = False
+            keep_verifying = False
+            shards = None
+            no_git_track = False
 
         with pytest.raises(SystemExit) as exc_info:
             _run_in_container(FIXTURE_TLA, Args())
@@ -89,12 +92,42 @@ class TestCheckDockerDispatch:
             benchmark_dir = None
             sany_only = True
             no_cache = False
+            keep_verifying = False
+            shards = None
+            no_git_track = False
 
         with pytest.raises(SystemExit):
             _run_in_container(FIXTURE_TLA, Args())
 
         cmd = mock_run.call_args[0][1]
         assert "--sany-only" in cmd
+
+    @patch("common.container.ContainerRunner.run_with_output")
+    @patch("common.container.ContainerRunner.image_exists", return_value=True)
+    def test_benchmark_dir_mounted_read_only_not_rewritten(self, mock_exists, mock_run):
+        # The canonical baseline must be mounted at /benchmark, never rewritten
+        # to the workspace: that would make the tamper oracle the solution itself.
+        mock_run.return_value = (0, "✅ PASS\n", "")
+
+        from common.check_proof import _run_in_container
+
+        class Args:
+            mode = "proof-completion"
+            timeout = 60
+            output = None
+            benchmark_dir = "/host/canonical/Euclid"
+            sany_only = False
+            no_cache = False
+            keep_verifying = False
+            shards = None
+            no_git_track = False
+
+        with pytest.raises(SystemExit):
+            _run_in_container(FIXTURE_TLA, Args())
+
+        config, cmd = mock_run.call_args[0][0], mock_run.call_args[0][1]
+        assert cmd[cmd.index("--benchmark-dir") + 1] == "/benchmark"
+        assert config.benchmark_dir == "/host/canonical/Euclid"
 
     @patch("common.container.ContainerRunner.run_with_output")
     @patch("common.container.ContainerRunner.image_exists", return_value=True)
@@ -110,12 +143,41 @@ class TestCheckDockerDispatch:
             benchmark_dir = None
             sany_only = False
             no_cache = True
+            keep_verifying = False
+            shards = None
+            no_git_track = False
 
         with pytest.raises(SystemExit):
             _run_in_container(FIXTURE_TLA, Args())
 
         cmd = mock_run.call_args[0][1]
         assert "--no-cache" in cmd
+
+    @patch("common.container.ContainerRunner.run_with_output")
+    @patch("common.container.ContainerRunner.image_exists", return_value=True)
+    def test_keep_verifying_no_git_track_and_shards_passed(self, mock_exists, mock_run):
+        mock_run.return_value = (1, "❌ FAIL\n", "")
+
+        from common.check_proof import _run_in_container
+
+        class Args:
+            mode = "proof-completion"
+            timeout = 60
+            output = None
+            benchmark_dir = None
+            sany_only = False
+            no_cache = False
+            keep_verifying = True
+            no_git_track = True
+            shards = 3
+
+        with pytest.raises(SystemExit):
+            _run_in_container(FIXTURE_TLA, Args())
+
+        cmd = mock_run.call_args[0][1]
+        assert "--keep-verifying" in cmd
+        assert "--no-git-track" in cmd
+        assert "--shards" in cmd and "3" in cmd
 
     @patch("common.container.ContainerRunner.run_with_output")
     @patch("common.container.ContainerRunner.image_exists", return_value=True)
@@ -131,6 +193,9 @@ class TestCheckDockerDispatch:
             benchmark_dir = None
             sany_only = False
             no_cache = False
+            keep_verifying = False
+            shards = None
+            no_git_track = False
 
         with pytest.raises(SystemExit):
             _run_in_container(FIXTURE_TLA, Args())
