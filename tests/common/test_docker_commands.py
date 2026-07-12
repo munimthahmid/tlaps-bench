@@ -254,26 +254,84 @@ class TestValidateDockerDispatch:
 class TestEnsureImage:
     """ensure_image builds only when needed."""
 
+    @patch("common.container.ContainerRunner.require_docker")
     @patch("common.container.ContainerRunner.build_image")
     @patch("common.container.ContainerRunner.image_exists", return_value=True)
-    def test_skips_build_when_exists(self, mock_exists, mock_build):
+    def test_skips_build_when_exists(self, mock_exists, mock_build, mock_require):
         from common.container import ensure_image
 
         ensure_image()
+        mock_require.assert_called_once()
         mock_build.assert_not_called()
 
+    @patch("common.container.ContainerRunner.require_docker")
     @patch("common.container.ContainerRunner.build_image")
     @patch("common.container.ContainerRunner.image_exists", return_value=False)
-    def test_builds_when_missing(self, mock_exists, mock_build):
+    def test_builds_when_missing(self, mock_exists, mock_build, mock_require):
         from common.container import ensure_image
 
         ensure_image()
+        mock_require.assert_called_once()
         mock_build.assert_called_once()
 
+    @patch("common.container.ContainerRunner.require_docker")
     @patch("common.container.ContainerRunner.build_image")
     @patch("common.container.ContainerRunner.image_exists", return_value=True)
-    def test_force_build_rebuilds(self, mock_exists, mock_build):
+    def test_force_build_rebuilds(self, mock_exists, mock_build, mock_require):
         from common.container import ensure_image
 
         ensure_image(force=True)
+        mock_require.assert_called_once()
         mock_build.assert_called_once()
+
+
+class TestDockerAvailability:
+    @pytest.fixture(autouse=True)
+    def _uncached(self):
+        """require_docker memoizes success; start each test from a cold cache."""
+        import common.container as container
+
+        container._docker_ok = False
+        yield
+        container._docker_ok = False
+
+    @patch("common.container.subprocess.run", side_effect=FileNotFoundError)
+    def test_missing_cli_has_actionable_error(self, mock_run):
+        from common.container import ContainerRunner, DockerUnavailableError
+
+        with pytest.raises(DockerUnavailableError, match="Docker CLI not found"):
+            ContainerRunner.require_docker()
+
+    @patch("common.container.subprocess.run")
+    def test_stopped_daemon_has_actionable_error(self, mock_run):
+        from common.container import ContainerRunner, DockerUnavailableError
+
+        mock_run.return_value = type("Result", (), {"returncode": 1, "stdout": "", "stderr": "daemon stopped"})()
+        with pytest.raises(DockerUnavailableError, match="Docker daemon is unavailable"):
+            ContainerRunner.require_docker()
+
+    @patch("common.container.subprocess.run")
+    def test_probe_runs_once_across_calls(self, mock_run):
+        """Every container entry goes through ensure_image; don't re-probe per task."""
+        from common.container import ContainerRunner
+
+        mock_run.return_value = type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        ContainerRunner.require_docker()
+        ContainerRunner.require_docker()
+
+        mock_run.assert_called_once()
+
+    @patch("common.container.subprocess.run")
+    def test_failure_is_not_cached(self, mock_run):
+        """A stopped daemon that gets started must be picked up on the next call."""
+        from common.container import ContainerRunner, DockerUnavailableError
+
+        stopped = type("Result", (), {"returncode": 1, "stdout": "", "stderr": "daemon stopped"})()
+        started = type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        mock_run.side_effect = [stopped, started]
+
+        with pytest.raises(DockerUnavailableError):
+            ContainerRunner.require_docker()
+        ContainerRunner.require_docker()
+
+        assert mock_run.call_count == 2

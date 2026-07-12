@@ -44,7 +44,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs
 
-# Layer 3: tlapm (pinned version, ~850MB download, rarely changes)
+# Layer 3: tlapm (rolling pre-release, ~850MB download, rarely changes)
 ARG TLAPM_TAG=1.6.0-pre
 ARG TLAPM_ASSET=tlapm-${TLAPM_TAG}-x86_64-linux-gnu.tar.gz
 ARG TLAPM_URL=https://github.com/tlaplus/tlapm/releases/download/${TLAPM_TAG}/${TLAPM_ASSET}

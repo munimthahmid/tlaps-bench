@@ -5,7 +5,7 @@
 #   - tla2tools.jar (SANY)   -> <repo>/lib/tla2tools.jar
 #
 # Idempotent: skips downloads when the target is already present.
-# Docker installs are handled inside docker/Dockerfile and are not touched here.
+# Docker installs are handled inside docker/base.Dockerfile and are not touched here.
 
 set -euo pipefail
 
@@ -15,16 +15,12 @@ set -euo pipefail
 HOST_OS="$(uname -s)"
 HOST_ARCH="$(uname -m)"
 
-# Pinned versions — bump deliberately, then re-run.
-# 1.6.0-pre is a *rolling* tag (the asset is rebuilt in place), so the tag alone
-# is not reproducible — pin by the expected `tlapm --version` commit and
-# re-download on mismatch. 80172c6 is the first rolling build carrying `--strict`
-# (tlaplus/tlapm#278); bump TLAPM_COMMIT deliberately when upgrading.
-# TLAPM_TAG/TLAPM_COMMIT are shared across platforms (same release); only the
-# downloaded asset differs. The 1.6.0-pre release publishes Linux x86_64 and
-# macOS arm64 binaries — there is no Intel (x86_64) macOS build.
+# Tool versions — bump deliberately, then re-run. TLAPM_TAG is a rolling
+# pre-release whose asset follows upstream main; only the platform-specific
+# asset name differs. The release publishes Linux x86_64 and macOS arm64
+# binaries — there is no Intel (x86_64) macOS build. A usable ~/.tlapm is kept
+# as-is (the download is 850 MB); delete it to pull the current build.
 TLAPM_TAG="1.6.0-pre"
-TLAPM_COMMIT="80172c6"
 case "${HOST_OS} ${HOST_ARCH}" in
   "Linux x86_64") TLAPM_ASSET="tlapm-${TLAPM_TAG}-x86_64-linux-gnu.tar.gz" ;;
   "Darwin arm64") TLAPM_ASSET="tlapm-${TLAPM_TAG}-arm64-darwin.tar.gz" ;;
@@ -104,13 +100,33 @@ require_disk_space() {
 }
 
 # --- tlapm ---
-# Pin by commit, not mere presence: the rolling tag means an existing ~/.tlapm
-# may be an older build (e.g. one without --strict), so re-install on mismatch.
-if [[ -x "${HOME}/.tlapm/bin/tlapm" ]] \
-   && "${HOME}/.tlapm/bin/tlapm" --version 2>/dev/null | grep -q "${TLAPM_COMMIT}"; then
-  echo "[install_deps] tlapm ${TLAPM_COMMIT} already at ~/.tlapm — skipping"
+# Gate on the capability the grader needs, not on the tag or a pinned commit.
+# check_proof and validate run `tlapm --strict` (tlaplus/tlapm#278) on every
+# obligation; a build predating it rejects the flag and exits non-zero, which
+# grades every task FAIL. Since 1.6.0-pre is a *rolling* tag, "a tlapm is
+# present" says nothing about whether it is usable — so probe --strict and
+# re-install when it is missing. This refreshes a stale ~/.tlapm while still
+# following upstream rebuilds of the tag.
+tlapm_supports_strict() {
+  # Capture, then match: a `| grep -q` pipeline can trip `pipefail` via SIGPIPE.
+  local help_text
+  help_text="$("$1" --help 2>&1)" || true
+  [[ "${help_text}" == *"--strict"* ]]
+}
+
+existing_tlapm=""
+if [[ -x "${HOME}/.tlapm/bin/tlapm" ]] && tlapm_supports_strict "${HOME}/.tlapm/bin/tlapm"; then
+  existing_tlapm="$("${HOME}/.tlapm/bin/tlapm" --version 2>/dev/null | sed -n '1p' || true)"
+fi
+if [[ -n "${existing_tlapm}" ]]; then
+  echo "[install_deps] tlapm ${existing_tlapm} already at ~/.tlapm — skipping"
+  echo "[install_deps] (delete ~/.tlapm to pull the current ${TLAPM_TAG} build)"
 else
-  echo "[install_deps] installing tlapm ${TLAPM_TAG} (${TLAPM_COMMIT});"
+  if [[ -x "${HOME}/.tlapm/bin/tlapm" ]]; then
+    echo "[install_deps] the tlapm at ~/.tlapm does not support --strict, which the"
+    echo "[install_deps] grader requires — replacing it with the current build."
+  fi
+  echo "[install_deps] installing latest tlapm ${TLAPM_TAG};"
   echo "[install_deps] the download is about 850 MB and may take several minutes."
   require_disk_space "${HOME}" $((2 * 1024 * 1024)) "The tlapm installation"
   require_disk_space "${TMPDIR:-/tmp}" $((3 * 1024 * 1024)) "Downloading and extracting tlapm"
@@ -146,12 +162,13 @@ else
     echo "[install_deps]        Any existing ~/.tlapm installation was left unchanged." >&2
     exit 1
   fi
-  if [[ "${installed}" != *"${TLAPM_COMMIT}"* ]]; then
-    echo "[install_deps] ERROR: downloaded tlapm version '${installed}'" >&2
-    echo "[install_deps]        does not contain expected commit ${TLAPM_COMMIT}." >&2
-    echo "[install_deps]        The rolling ${TLAPM_TAG} asset has moved. Run 'git pull'" >&2
-    echo "[install_deps]        and retry; if this persists, TLAPM_COMMIT and the" >&2
-    echo "[install_deps]        Dockerfile pin must be updated together." >&2
+  # The rolling asset moves with upstream main, so it can in principle lose the
+  # flag the grader is built on. Refuse the download rather than install a tlapm
+  # that would fail every task.
+  if ! tlapm_supports_strict "${STAGED_TLAPM}/bin/tlapm"; then
+    echo "[install_deps] ERROR: the downloaded tlapm ('${installed}') does not support" >&2
+    echo "[install_deps]        --strict, which the grader requires (tlaplus/tlapm#278)." >&2
+    echo "[install_deps]        The rolling ${TLAPM_TAG} asset appears to have regressed." >&2
     echo "[install_deps]        Any existing ~/.tlapm installation was left unchanged." >&2
     exit 1
   fi
@@ -232,7 +249,9 @@ fi
 echo "[install_deps] done."
 echo
 echo "Versions:"
-echo "  tlapm:           ${TLAPM_TAG} (${TLAPM_COMMIT})"
+# Never let the closing summary fail a run that already installed everything.
+tlapm_version="$("${HOME}/.tlapm/bin/tlapm" --version 2>/dev/null | sed -n '1p' || true)"
+echo "  tlapm:           ${TLAPM_TAG} (${tlapm_version:-version unavailable})"
 echo "  Apalache:        ${APALACHE_VERSION}"
 echo "  tla2tools/SANY:  ${TLATOOLS_TAG}"
 echo "  CommunityModules: ${COMMUNITY_TAG}"
