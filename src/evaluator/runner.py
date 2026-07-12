@@ -461,6 +461,17 @@ def _resume_should_skip(result: dict) -> bool:
     return is_skipped(result) or (is_pass_with_continuations(result) and not is_non_genuine(result))
 
 
+def _record_result(results: list[dict], new_result: dict) -> None:
+    """Record a benchmark's latest result, replacing previous attempts.
+
+    Resume reruns a benchmark in the same output directory. Its new result
+    replaces the previous attempt instead of becoming a second scored task.
+    """
+    benchmark = new_result["benchmark"]
+    results[:] = [result for result in results if result.get("benchmark") != benchmark]
+    results.append(new_result)
+
+
 def _resume_done_benchmarks(results: list[dict]) -> set[str]:
     return {r["benchmark"] for r in results if _resume_should_skip(r)}
 
@@ -1491,7 +1502,9 @@ def main():
         prev_json = os.path.join(output_dir, "results.json")
         if os.path.isfile(prev_json):
             with open(prev_json) as f:
-                results = json.load(f)
+                previous_results = json.load(f)
+            for previous_result in previous_results:
+                _record_result(results, previous_result)
             # Skip genuine PASS (already done) and SKIP (operator-marked
             # frontier benchmarks deliberately excluded from retry). A PASS
             # produced by INFRA_ERROR / QUOTA_EXHAUSTED is non-genuine and must
@@ -1542,14 +1555,14 @@ def main():
 
     start_time = time.time()
     total_benchmarks = len(benchmark_files)
-    prior_done = len(results)
+    prior_done = total_benchmarks - len(work_items)
     if args.resume:
         print(f"Resume: {len(work_items)} benchmarks left to run")
 
     if args.jobs == 1:
         for i, item in enumerate(work_items):
             r = run_single_benchmark(item)
-            results.append(r)
+            _record_result(results, r)
             icon = VERDICT_ICONS.get(r["check_verdict"], "❓")
             tokens = f"{r.get('input_tokens', 0):,}/{r.get('output_tokens', 0):,}"
             cont = _continuation_note(r)
@@ -1563,7 +1576,7 @@ def main():
             futures = {executor.submit(run_single_benchmark, item): item for item in work_items}
             for done_count, future in enumerate(as_completed(futures), start=1):
                 r = future.result()
-                results.append(r)
+                _record_result(results, r)
                 icon = VERDICT_ICONS.get(r["check_verdict"], "❓")
                 tokens = f"{r.get('input_tokens', 0):,}/{r.get('output_tokens', 0):,}"
                 cont = _continuation_note(r)

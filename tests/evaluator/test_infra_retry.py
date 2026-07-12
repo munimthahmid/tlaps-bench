@@ -173,6 +173,27 @@ def test_resume_does_not_skip_non_genuine_pass_results():
     assert runner._resume_done_benchmarks(results) == {"genuine-pass.tla", "legacy-pass.tla", "skipped.tla"}
 
 
+def test_resumed_result_replaces_non_genuine_attempt(tmp_path):
+    results = [
+        _result("already-passed.tla", "PASS"),
+        _result("retry.tla", "ERROR", termination_reason=TerminationReason.INFRA_ERROR),
+    ]
+
+    runner._record_result(results, _result("retry.tla", "PASS"))
+    runner.update_summary(
+        results, str(tmp_path), total_benchmarks=2, backend_name="copilot", mode_name="proof-completion"
+    )
+
+    assert [(r["benchmark"], r["check_verdict"]) for r in results] == [
+        ("already-passed.tla", "PASS"),
+        ("retry.tla", "PASS"),
+    ]
+    summary = (tmp_path / "summary.md").read_text()
+    assert "**Progress**: 2/2" in summary
+    assert "**Pass rate**: 2/2 (100.0%)" in summary
+    assert json.loads((tmp_path / "results.json").read_text()) == results
+
+
 def test_make_workspace_cleans_up_on_setup_failure(tmp_path, monkeypatch):
     # The temp dir must not leak when workspace setup dies half-way (disk full,
     # unreadable dep) — same guarantee _make_canonical_dir gives.
