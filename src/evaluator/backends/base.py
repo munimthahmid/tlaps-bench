@@ -179,13 +179,25 @@ class Backend(ABC):
     session_state_dir: str | None = None
     capabilities = BackendCapabilities()
     reasoning_effort: str | None = None
-    supports_reasoning_effort = False
+    reasoning_effort_values: tuple[str, ...] = ()
 
     def set_reasoning_effort(self, reasoning_effort: str | None) -> None:
         """Validate and store an optional backend-native reasoning effort."""
 
-        if reasoning_effort is not None and not self.supports_reasoning_effort:
+        if reasoning_effort is None:
+            self.reasoning_effort = None
+            return
+        if reasoning_effort == "":
+            raise ValueError(
+                f"backend {self.name!r}: --reasoning-effort cannot be empty; omit the option to use the backend default"
+            )
+        if not self.reasoning_effort_values:
             raise ValueError(f"backend {self.name!r} does not support --reasoning-effort")
+        if reasoning_effort not in self.reasoning_effort_values:
+            choices = ", ".join(self.reasoning_effort_values)
+            raise ValueError(
+                f"backend {self.name!r}: invalid --reasoning-effort {reasoning_effort!r}; choose from: {choices}"
+            )
         self.reasoning_effort = reasoning_effort
 
     def get_credential_mounts(self) -> list[str]:

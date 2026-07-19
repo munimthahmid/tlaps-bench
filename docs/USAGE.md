@@ -147,7 +147,7 @@ uv run tlaps-bench run [flags]
 | `--backend` | `codex` | Evaluator backend to use |
 | `--mode` | `proof-completion` | Benchmark mode |
 | `--model` | (backend default) | Override the model |
-| `--reasoning-effort` | (backend behavior) | Pass a backend/model-specific reasoning effort; omitted preserves existing behavior |
+| `--reasoning-effort` | (backend behavior) | Pass a backend/model-specific reasoning effort |
 | `--filter` | (all benchmarks) | Substring match on path, comma-separated |
 | `--jobs` | `1` | Number of parallel backend runs |
 | `--timeout` | `28800` | Per-benchmark backend timeout in seconds |

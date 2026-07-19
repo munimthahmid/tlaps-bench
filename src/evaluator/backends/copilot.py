@@ -25,7 +25,7 @@ class CopilotBackend(AgenticBackend):
         "COPILOT_PROVIDER_TYPE",
         "COPILOT_MODEL",
     ]
-    supports_reasoning_effort = True
+    reasoning_effort_values = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
     def __init__(self, model: str | None = None):
         self.model = model or DEFAULT_MODEL
@@ -55,7 +55,7 @@ class CopilotBackend(AgenticBackend):
             "--model",
             self.model,
             "--effort",
-            self.reasoning_effort or "max",
+            self.reasoning_effort if self.reasoning_effort is not None else "max",
             "--log-level",
             "none",
             "--no-color",

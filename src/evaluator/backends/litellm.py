@@ -6,14 +6,21 @@ import json
 
 from .agentic import AgenticBackend
 from .base import detect_firewall_hosts
-from .litellm_common import DEFAULT_MODEL, ENV_KEYS, check_auth, credential_mounts, uses_bedrock
+from .litellm_common import (
+    DEFAULT_MODEL,
+    ENV_KEYS,
+    REASONING_EFFORT_VALUES,
+    check_auth,
+    credential_mounts,
+    uses_bedrock,
+)
 
 
 class LiteLLMBackend(AgenticBackend):
     name = "litellm"
     install_script = "install-litellm.sh"
     env_keys = ENV_KEYS
-    supports_reasoning_effort = True
+    reasoning_effort_values = REASONING_EFFORT_VALUES
 
     def __init__(self, model: str | None = None):
         self.model = model or DEFAULT_MODEL

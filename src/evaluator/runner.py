@@ -1412,7 +1412,8 @@ def main():
     parser.add_argument(
         "--reasoning-effort",
         default=None,
-        help="Pass a backend/model-specific reasoning effort (default: preserve existing backend behavior)",
+        help="Override backend/model reasoning effort; accepted values depend on --backend "
+        "(default: preserve existing backend behavior)",
     )
     parser.add_argument("--jobs", type=int, default=1, help="Parallel backend runs")
     parser.add_argument("--filter", default=None, help="Only run benchmarks matching pattern")
