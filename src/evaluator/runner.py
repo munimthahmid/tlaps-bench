@@ -1,5 +1,5 @@
 """
-Run an agent CLI on TLAPS benchmarks to attempt automated proof writing.
+Run evaluator backends on TLAPS benchmarks to attempt automated proof writing.
 
 For each benchmark:
 1. Creates an isolated workspace (fresh git repo with only benchmark files)
@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from common.container import ContainerConfig, ContainerRunner, DockerUnavailableError, ensure_image, forward_env
 from evaluator import quota
 from evaluator.backends import get_backend, list_backends
-from evaluator.backends.base import AgentBackend
+from evaluator.backends.base import Backend, SubmissionDisposition
 from evaluator.modes import get_mode, list_modes
 from evaluator.modes.base import Mode
 from evaluator.score import (
@@ -232,7 +232,7 @@ class WorkItem:
     output_dir: str
     timeout: int
     check_timeout: int
-    backend: AgentBackend
+    backend: Backend
     mode: Mode
     tlapm_path: str
     tlapm_lib: str
@@ -248,7 +248,7 @@ class WorkItem:
     use_container: bool = False
     # Extra agent attempts after a transient startup/infra failure (INFRA_ERROR
     # with 0 output tokens); 0 disables retrying (the failure still ends ERROR).
-    infra_retries: int = 3
+    infra_retries: int | None = None
     # Continuation rounds after a genuine non-PASS: re-run the agent in the SAME
     # workspace so it builds on its own partial proof (see _run_continuations).
     # 0 disables. pass@1 (check_verdict) is unaffected either way.
@@ -300,8 +300,8 @@ def _make_workspace(backend_name: str, name_no_ext: str, benchmark_path: str, ba
 
 
 @dataclass
-class AgentRunOutcome:
-    """What _run_agent_with_retries leaves behind for the caller to grade/record."""
+class ExecutionOutcome:
+    """What one backend execution leaves behind for grading and recording."""
 
     workspace: str
     canonical_dir: str
@@ -311,7 +311,7 @@ class AgentRunOutcome:
     infra_reasons: list[str]
 
 
-def _run_agent_with_retries(
+def _run_backend_with_retries(
     item: WorkItem,
     prompt: str,
     agent_dir: str,
@@ -323,7 +323,7 @@ def _run_agent_with_retries(
     basename: str,
     name_no_ext: str,
     fixed_workspace: str | None = None,
-) -> AgentRunOutcome:
+) -> ExecutionOutcome:
     """One agent-run lifecycle, shared by the first attempt and continuation
     rounds: run the agent (sleeping through hard provider quota caps, see
     quota.run_with_quota_retry), parse its output, classify the termination,
@@ -372,11 +372,11 @@ def _run_agent_with_retries(
                     os.remove(agent_stderr)
                 t0 = time.time()
                 if item.use_container:
-                    _run_agent_container(
+                    _run_backend_container(
                         item, backend, workspace, agent_dir, agent_jsonl, prompt, result, canonical_dir
                     )
                 else:
-                    _run_agent_local(
+                    _run_backend_local(
                         item,
                         backend,
                         mode,
@@ -388,7 +388,13 @@ def _run_agent_with_retries(
                         checker_bin,
                         canonical_dir,
                     )
-                active_secs += time.time() - t0
+                elapsed = time.time() - t0
+                # Cooperative backends may spend a bounded grace period flushing
+                # audit events after the logical deadline. That is not extra model
+                # time and must not inflate the benchmark runtime metric.
+                if item.timeout > 0 and result.get("agent_exit") == -1 and "timeout after" in result.get("error", ""):
+                    elapsed = min(elapsed, item.timeout)
+                active_secs += elapsed
 
             quota_exhausted = not quota.run_with_quota_retry(
                 _run_once,
@@ -403,6 +409,12 @@ def _run_agent_with_retries(
             transcript, input_tokens, output_tokens = backend.parse_output(agent_jsonl)
             result["input_tokens"] = input_tokens
             result["output_tokens"] = output_tokens
+            parse_metadata = getattr(backend, "parse_run_metadata", None)
+            if parse_metadata:
+                runner_error = result.get("error")
+                result.update(parse_metadata(agent_jsonl))
+                if runner_error:
+                    result["error"] = runner_error
 
             if quota_exhausted:
                 break  # quota owns its own retry budget — never infra-retried
@@ -413,6 +425,9 @@ def _run_agent_with_retries(
             ctx = TerminationContext(
                 backend=backend.name,
                 jsonl_path=agent_jsonl,
+                approach=backend.approach,
+                provider=backend.provider,
+                request_audit_validator=backend.validate_request_audit,
                 agent_exit=result.get("agent_exit"),
                 error=result.get("error", ""),
                 stderr_path=agent_stderr,
@@ -453,7 +468,7 @@ def _run_agent_with_retries(
     if infra_reasons:
         result["infra_retries"] = attempt  # retries performed (0-based final attempt index)
         result["infra_retry_reasons"] = infra_reasons
-    return AgentRunOutcome(workspace, canonical_dir, transcript, quota_exhausted, infra_retriable, infra_reasons)
+    return ExecutionOutcome(workspace, canonical_dir, transcript, quota_exhausted, infra_retriable, infra_reasons)
 
 
 def _resume_should_skip(result: dict) -> bool:
@@ -581,9 +596,13 @@ def update_summary(results, output_dir, total_benchmarks, backend_name, mode_nam
 
 
 def run_single_benchmark(item: WorkItem):
-    """Run the agent backend on a single benchmark. Returns result dict."""
+    """Run one evaluator backend on a single benchmark. Returns result dict."""
     backend = item.backend
     mode = item.mode
+
+    # Enforce backend capabilities at the actual execution boundary, before an
+    # invalid direct Python call can clear prior artifacts or touch quota/state.
+    item.infra_retries = backend.validate_options(item.infra_retries, item.max_continuations)
 
     rel_path = os.path.relpath(item.benchmark_path, mode.benchmark_dir())
     module_dir = os.path.basename(os.path.dirname(item.benchmark_path))
@@ -595,6 +614,7 @@ def run_single_benchmark(item: WorkItem):
     input_dir = os.path.join(result_dir, "input")
     agent_dir = os.path.join(result_dir, "agent")
     grading_dir = os.path.join(result_dir, "grading")
+    _reset_benchmark_artifacts(item.output_dir, result_dir)
     for d in (input_dir, agent_dir, grading_dir):
         os.makedirs(d, exist_ok=True)
 
@@ -612,6 +632,7 @@ def run_single_benchmark(item: WorkItem):
         # INFRA_ERROR marks a result that was cut short by infrastructure rather
         # than a genuine model attempt, so a FAIL can be filtered/retried.
         "termination_reason": TerminationReason.OK,
+        **backend.initial_result_metadata(),
     }
     if item.max_continuations > 0:
         # Run-level config, stamped on EVERY result — first-attempt PASSes and
@@ -648,8 +669,14 @@ def run_single_benchmark(item: WorkItem):
         for dep in deps:
             shutil.copy2(dep, os.path.join(input_dir, os.path.basename(dep)))
 
-        # Build prompt
-        prompt = mode.build_prompt(basename, item.tlapm_path, item.tlapm_lib)
+        prompt = backend.build_prompt(
+            mode,
+            item.benchmark_path,
+            deps,
+            basename,
+            item.tlapm_path,
+            item.tlapm_lib,
+        )
         with open(os.path.join(input_dir, "prompt.txt"), "w") as f:
             f.write(prompt)
 
@@ -661,10 +688,22 @@ def run_single_benchmark(item: WorkItem):
         # (INFRA_ERROR + 0 output tokens) says nothing about the model, so it is
         # retried on a fresh workspace instead of graded. Everything else gets
         # exactly one attempt.
-        run = _run_agent_with_retries(
+        run = _run_backend_with_retries(
             item, prompt, agent_dir, agent_jsonl, agent_stderr, result, checker_bin, deps, basename, name_no_ext
         )
         workspace, canonical_dir = run.workspace, run.canonical_dir
+
+        destination = os.path.join(workspace, basename)
+        submission = backend.prepare_submission(
+            agent_jsonl,
+            destination,
+            result["termination_reason"],
+            result.get("error", ""),
+            allow_materialization=not run.quota_exhausted and not run.infra_retriable,
+        )
+        result.update(submission.metadata)
+        if submission.error is not None:
+            result["error"] = submission.error
 
         with open(os.path.join(agent_dir, "transcript.txt"), "w") as f:
             f.write(f"Benchmark: {rel_path}\n")
@@ -674,7 +713,7 @@ def run_single_benchmark(item: WorkItem):
             f.write(run.transcript)
 
         solution_path = os.path.join(workspace, basename)
-        if os.path.isfile(solution_path):
+        if submission.copy_solution and os.path.isfile(solution_path):
             shutil.copy2(solution_path, os.path.join(agent_dir, "solution.tla"))
 
         agent_check_file = os.path.join(workspace, name_no_ext + ".result")
@@ -700,7 +739,14 @@ def run_single_benchmark(item: WorkItem):
             # workspace would turn infra noise into a proof verdict (FAIL, or even
             # a bogus PASS). Mark ERROR (retriable via --resume), skip the grader.
             result["check_verdict"] = "ERROR"
-            result["error"] = f"startup/infra failure ({run.infra_reasons[-1]}); exhausted infra retries"
+            if not result.get("error"):
+                result["error"] = f"startup/infra failure ({run.infra_reasons[-1]}); exhausted infra retries"
+            with open(os.path.join(result_dir, "result.json"), "w") as f:
+                json.dump(result, f, indent=2)
+            return result
+
+        if submission.disposition != SubmissionDisposition.GRADE:
+            result["check_verdict"] = submission.disposition
             with open(os.path.join(result_dir, "result.json"), "w") as f:
                 json.dump(result, f, indent=2)
             return result
@@ -729,6 +775,40 @@ def run_single_benchmark(item: WorkItem):
             shutil.rmtree(canonical_dir, ignore_errors=True)
 
     return result
+
+
+def _reset_benchmark_artifacts(output_dir: str, result_dir: str) -> None:
+    """Remove runner-owned artifacts without following generated-path symlinks."""
+    output_root = os.path.abspath(output_dir)
+    result_path = os.path.abspath(result_dir)
+    if os.path.commonpath((output_root, result_path)) != output_root:
+        raise RuntimeError(f"benchmark result path escapes output directory: {result_dir}")
+
+    # The user may intentionally make --output-dir itself a symlink, but the
+    # runner-generated module/theorem components must be real directories. A
+    # symlink there could redirect cleanup into unrelated data outside the run.
+    current = output_root
+    for component in os.path.relpath(result_path, output_root).split(os.sep):
+        if component == ".":
+            continue
+        current = os.path.join(current, component)
+        if os.path.islink(current):
+            raise RuntimeError(f"refusing to clean symlinked benchmark result path: {current}")
+
+    resolved_root = os.path.realpath(output_root)
+    resolved_result = os.path.realpath(result_path)
+    if os.path.commonpath((resolved_root, resolved_result)) != resolved_root:
+        raise RuntimeError(f"benchmark result path resolves outside output directory: {result_dir}")
+
+    os.makedirs(result_dir, exist_ok=True)
+    for name in ("input", "agent", "grading", "continuations", "result.json"):
+        path = os.path.join(result_dir, name)
+        if not os.path.lexists(path):
+            continue
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
 
 
 def _stash_failed_attempt(agent_dir: str, attempt: int) -> None:
@@ -800,7 +880,7 @@ def _run_continuations(
         # this round's evidence only if this round's agent (re)wrote it.
         check_mtime_before = os.stat(agent_check_file).st_mtime_ns if os.path.isfile(agent_check_file) else None
 
-        run = _run_agent_with_retries(
+        run = _run_backend_with_retries(
             item,
             prompt,
             round_dir,
@@ -879,7 +959,7 @@ def _prepare_session_dir(session_dir: str) -> None:
             f.write("# tlaps-bench session data (may contain credentials) — do not commit\n*\n")
 
 
-def _run_agent_container(
+def _run_backend_container(
     item: WorkItem,
     backend,
     workspace: str,
@@ -889,9 +969,11 @@ def _run_agent_container(
     result: dict,
     canonical_dir: str | None = None,
 ) -> None:
-    """Run agent inside a Docker container with live output streaming."""
+    """Run a backend inside Docker with live output and timeout draining."""
     runner = ContainerRunner()
-    cmd = backend.build_command("/workspace", "/results")
+    timeout = item.timeout if item.timeout and item.timeout > 0 else None
+    propagated_deadline = time.time() + timeout if timeout and backend.capabilities.cooperative_deadline else None
+    cmd = _build_backend_command(backend, "/workspace", "/results", propagated_deadline)
 
     config = ContainerConfig(
         workspace=workspace,
@@ -929,7 +1011,6 @@ def _run_agent_container(
     # at grading.
     config.env["TLAPS_CHECK_TIMEOUT"] = str(item.check_timeout)
 
-    timeout = item.timeout if item.timeout and item.timeout > 0 else None
     container_run = None
     try:
         container_run = runner.run(config, cmd, stdin_data=prompt)
@@ -951,13 +1032,26 @@ def _run_agent_container(
             fcntl.fcntl(proc.stderr, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
         stderr_chunks: list[str] = []
+        logical_deadline = propagated_deadline or (time.time() + timeout if timeout else None)
+        grace = backend.capabilities.timeout_drain_grace if propagated_deadline is not None else 0.0
+        hard_deadline = logical_deadline + grace if logical_deadline is not None else None
+        timed_out = False
 
         # Stream stdout to file in real-time (and stderr separately)
         with open(agent_jsonl, "w") as jsonl_f:
-            deadline = (time.time() + timeout) if timeout else None
             while True:
-                # Poll with 5s timeout so deadline is checked even if agent hangs
-                ready, _, _ = select.select([proc.stdout], [], [], 5.0)
+                now = time.time()
+                if logical_deadline is not None and now >= logical_deadline:
+                    timed_out = True
+                if timed_out and hard_deadline is not None and now >= hard_deadline:
+                    runner.kill(container_run)
+                    result["agent_exit"] = -1
+                    result["error"] = f"{backend.name} timeout after {item.timeout}s"
+                    return
+
+                boundary = hard_deadline if timed_out else logical_deadline
+                poll_timeout = min(5.0, max(boundary - now, 0.0)) if boundary is not None else 5.0
+                ready, _, _ = select.select([proc.stdout], [], [], poll_timeout)
                 # Drain stderr opportunistically
                 if proc.stderr:
                     try:
@@ -982,13 +1076,10 @@ def _run_agent_container(
                             sys.stdout.flush()
                 elif proc.poll() is not None:
                     break
-                if deadline and time.time() > deadline:
-                    runner.kill(container_run)
-                    result["agent_exit"] = -1
-                    result["error"] = f"{backend.name} timeout after {item.timeout}s"
-                    return
 
-        result["agent_exit"] = proc.returncode
+        if logical_deadline is not None and time.time() >= logical_deadline:
+            timed_out = True
+        result["agent_exit"] = -1 if timed_out else proc.returncode
         # Drain any remaining stderr
         if proc.stderr:
             try:
@@ -1001,7 +1092,9 @@ def _run_agent_container(
         if stderr:
             with open(os.path.join(agent_dir, "stderr.txt"), "w") as f:
                 f.write(stderr)
-        if proc.returncode == 137:
+        if timed_out:
+            result["error"] = f"{backend.name} timeout after {item.timeout}s"
+        elif proc.returncode == 137:
             result["error"] = "container OOM killed (exit 137)"
     except Exception as e:
         result["agent_exit"] = -2
@@ -1015,7 +1108,7 @@ def _run_agent_container(
             runner.cleanup_credential_tmps()
 
 
-def _run_agent_local(
+def _run_backend_local(
     item: WorkItem,
     backend,
     mode,
@@ -1027,14 +1120,16 @@ def _run_agent_local(
     checker_bin: str,
     canonical_dir: str | None = None,
 ) -> None:
-    """Run agent as a local subprocess (existing behavior)."""
-    cmd = backend.build_command(workspace, agent_dir)
+    """Run a backend as a local subprocess with its declared timeout policy."""
+    timeout = item.timeout if item.timeout and item.timeout > 0 else None
+    propagated_deadline = time.time() + timeout if timeout and backend.capabilities.cooperative_deadline else None
+    cmd = _build_backend_command(backend, workspace, agent_dir, propagated_deadline)
     shell_cmd = "source ~/.zshrc 2>/dev/null; source ~/.bashrc 2>/dev/null; exec " + " ".join(
         shlex.quote(c) for c in cmd
     )
 
-    _to = item.timeout if item.timeout and item.timeout > 0 else None
     timed_out = {"v": False}
+    hard_kill_timer: threading.Timer | None = None
     proc = None
 
     agent_env = dict(os.environ)
@@ -1064,17 +1159,33 @@ def _run_agent_local(
                 start_new_session=True,
             )
 
-            def _watchdog():
+            logical_deadline = propagated_deadline or (time.time() + timeout if timeout else None)
+            grace = backend.capabilities.timeout_drain_grace if propagated_deadline is not None else 0.0
+
+            def _hard_kill() -> None:
                 timed_out["v"] = True
                 kill_agent_tree(proc, workspace)
 
-            timer = threading.Timer(_to, _watchdog) if _to else None
+            def _logical_timeout() -> None:
+                timed_out["v"] = True
+                if grace <= 0:
+                    _hard_kill()
+
+            timer_delay = max(logical_deadline - time.time(), 0.0) if logical_deadline is not None else None
+            timer = threading.Timer(timer_delay, _logical_timeout) if timer_delay is not None else None
             if timer:
                 timer.daemon = True
                 timer.start()
+            if logical_deadline is not None and grace > 0:
+                hard_delay = max(logical_deadline + grace - time.time(), 0.0)
+                hard_kill_timer = threading.Timer(hard_delay, _hard_kill)
+                hard_kill_timer.daemon = True
+                hard_kill_timer.start()
             try:
-                _bt = (_to + 600) if _to else None
-                _, stderr = proc.communicate(input=prompt, timeout=_bt)
+                hard_wait = (
+                    max(logical_deadline + grace - time.time(), 0.0) + 600 if logical_deadline is not None else None
+                )
+                _, stderr = proc.communicate(input=prompt, timeout=hard_wait)
             except subprocess.TimeoutExpired:
                 timed_out["v"] = True
                 kill_agent_tree(proc, workspace)
@@ -1082,8 +1193,12 @@ def _run_agent_local(
                     proc.wait(timeout=30)
                 stderr = ""
             finally:
+                if logical_deadline is not None and time.time() >= logical_deadline:
+                    timed_out["v"] = True
                 if timer:
                     timer.cancel()
+                if hard_kill_timer:
+                    hard_kill_timer.cancel()
         result["agent_exit"] = proc.returncode
         if stderr:
             with open(os.path.join(agent_dir, "stderr.txt"), "w") as f:
@@ -1097,6 +1212,17 @@ def _run_agent_local(
         result["error"] = str(e)
         if proc is not None:
             kill_agent_tree(proc, workspace)
+
+
+def _build_backend_command(
+    backend: Backend,
+    workspace: str,
+    result_dir: str,
+    deadline: float | None,
+) -> list[str]:
+    """Build a command through the backend's approach-specific lifecycle hook."""
+
+    return backend.build_run_command(workspace, result_dir, deadline)
 
 
 def _run_grader_container(
@@ -1275,13 +1401,15 @@ def _run_preflight(backend) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run an agent CLI on TLAPS benchmarks")
-    parser.add_argument("--backend", default="codex", choices=list_backends(), help="Agent backend (default: codex)")
+    parser = argparse.ArgumentParser(description="Run evaluator backends on TLAPS benchmarks")
+    parser.add_argument(
+        "--backend", default="codex", choices=list_backends(), help="Evaluator backend (default: codex)"
+    )
     parser.add_argument(
         "--mode", default="proof-completion", choices=list_modes(), help="Benchmark mode (default: proof-completion)"
     )
     parser.add_argument("--model", default=None, help="Override the backend default model")
-    parser.add_argument("--jobs", type=int, default=1, help="Parallel agent runs")
+    parser.add_argument("--jobs", type=int, default=1, help="Parallel backend runs")
     parser.add_argument("--filter", default=None, help="Only run benchmarks matching pattern")
     parser.add_argument(
         "--timeout",
@@ -1335,10 +1463,11 @@ def main():
     parser.add_argument(
         "--infra-retries",
         type=int,
-        default=3,
+        default=None,
         help="Extra agent attempts after a transient startup/infrastructure failure "
         "(agent died with 0 output tokens), so 3 = up to 4 attempts total "
-        "(default: 3; 0 = no retries, the failure still ends as ERROR)",
+        "(default: 3 for agentic backends, 0 for one-shot; 0 = no retries, "
+        "the failure still ends as ERROR)",
     )
     parser.add_argument(
         "--max-continuations",
@@ -1410,6 +1539,14 @@ def main():
             2, f"{parser.prog}: error: no benchmarks found for mode {mode.name!r} under {mode.benchmark_dir()}\n"
         )
 
+    # Resolve capability-dependent defaults only after task discovery. This
+    # preserves the useful fail-fast behavior for a misspelled --filter: no
+    # backend validation, auth probe, image build, or model request happens.
+    try:
+        args.infra_retries = backend.validate_options(args.infra_retries, args.max_continuations)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     auth_err = backend.check_auth()
     if auth_err:
         print(f"ERROR: {auth_err}")
@@ -1442,8 +1579,10 @@ def main():
         # id, unknown CLI flag, missing credentials, or an auth host the
         # firewall blocks) otherwise produces a whole sweep of silent 0-token
         # FAILs that look like honest "couldn't prove it" results.
-        if not args.skip_preflight:
+        if not args.skip_preflight and backend.capabilities.model_preflight:
             _run_preflight(backend)
+        elif not args.skip_preflight:
+            print(f"Preflight: skipped — backend {backend.name!r} does not support a model preflight request")
     else:
         # Local mode: require tlapm and checker on host
         ensure_tlapm()

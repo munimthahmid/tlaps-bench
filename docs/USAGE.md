@@ -38,14 +38,16 @@ uv run tlaps-bench run --backend codex --model gpt-5.5 --mode proof-from-scratch
 
 ## Backends
 
-A backend is the AI agent that attempts the proof. Five are included:
+A backend is the model integration that attempts the proof. Seven are included:
 
 | Backend | CLI Name | Default Model |
 |---------|----------|---------------|
 | OpenAI Codex | `codex` | `gpt-5.5` |
 | Claude Code | `claude_code` | `claude-opus-4-8` |
 | GitHub Copilot | `copilot` | `claude-opus-4.8` |
+| GitHub Copilot SDK (one-shot) | `copilot_oneshot` | `claude-opus-4.8` |
 | LiteLLM | `litellm` | `claude-sonnet-4-6` |
+| LiteLLM (one-shot) | `litellm_oneshot` | `claude-sonnet-4-6` |
 | Pi | `pi` | `openai/gpt-5.5` |
 
 Select a backend with `--backend`:
@@ -54,6 +56,7 @@ Select a backend with `--backend`:
 uv run tlaps-bench run --backend claude_code --model claude-opus-4-8
 uv run tlaps-bench run --backend pi --model anthropic/claude-sonnet-4-6
 uv run tlaps-bench run --backend litellm --model claude-sonnet-4-6
+uv run tlaps-bench run --backend litellm_oneshot --model claude-sonnet-4-6
 ```
 
 ### Authentication
@@ -72,10 +75,32 @@ If you are already logged in to an agent on your host machine (e.g. `codex login
 | `codex` | `OPENAI_API_KEY` or `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_HOST` | `~/.codex/` (logged-in session) |
 | `claude_code` | `ANTHROPIC_API_KEY` | `~/.claude/` |
 | `copilot` | `COPILOT_GITHUB_TOKEN` or `GH_TOKEN`. BYOK: `COPILOT_PROVIDER_BASE_URL` + `COPILOT_PROVIDER_API_KEY` + `COPILOT_PROVIDER_TYPE` | |
+| `copilot_oneshot` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` | |
 | `litellm` | Model-dependent: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY` | `~/.aws/` (for Bedrock models) |
+| `litellm_oneshot` | Model-dependent: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY` | `~/.aws/` (for Bedrock models) |
 | `pi` | Provider-dependent: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. | `~/.pi/` (auth.json), `~/.aws/` (for Bedrock) |
 
 For the `pi` backend, the model format is `provider/model` (e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-4-6`). The provider prefix determines which credentials are used.
+
+### Strict one-shot backends
+
+`litellm_oneshot` and `copilot_oneshot` use the same provider-neutral one-shot contract. The target module and its dependencies are embedded in one user prompt, only one provider invocation is permitted, and the requested response is either one complete TLA+ module or exactly one `tla` code fence containing that module. The runner materializes the sole non-empty response as `solution.tla` and leaves syntax and proof validity to the normal grader; there is no agent tool loop or opportunity to inspect and edit the workspace.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+uv run tlaps-bench run --backend litellm_oneshot --model claude-sonnet-4-6 --filter GCD_GCD3
+
+export COPILOT_GITHUB_TOKEN=github_pat_...
+uv run tlaps-bench run --backend copilot_oneshot --model claude-opus-4.8 --filter GCD_GCD3
+```
+
+The LiteLLM backend makes one non-streaming `litellm.completion` invocation with the prompt as its sole user message and no tools or system message. LiteLLM-level retries are disabled, but provider transport behavior below that adapter boundary is not wire-audited. Its normalized `model_requests: 1` therefore means one logical completion invocation, not an observed wire-request count. The Copilot backend uses the official Python Copilot SDK. Its request handler rebuilds the SDK's outbound inference request from endpoint-specific control-field allowlists before forwarding it: system and developer messages, tool definitions and tool choice, and SDK-added current date/time context are removed. The handler blocks unknown model-layer endpoints and any second inference attempt. This is an auditable exactly-one-request guarantee at the SDK-to-Copilot-API boundary; it does not claim control over prompts or processing that GitHub's gateway may apply after receiving the request.
+
+Copilot receives the benchmark's absolute deadline, so SDK and session startup count against the same wall-clock budget as inference. At the deadline an independent watchdog freezes the wire guard, cancels in-flight forwarding, emits and flushes usage plus request-audit evidence, and only then attempts the SDK's abort/teardown; the host allows a bounded 10-second drain window before a hard kill. The frozen guard rejects any late SDK inference attempt, so that window is cleanup time only: the verdict is already `TIMEOUT`, and recorded model runtime is capped at the benchmark timeout.
+
+Strict one-shot runs automatically skip the model preflight because it would consume another inference. Their inline infrastructure retry count is fixed at `0`, and `--max-continuations` must also remain `0`. `copilot_oneshot` accepts only an explicit `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`; it does not probe a Copilot CLI login, mount stored session credentials, or accept the agentic backend's BYOK settings.
+
+With `--no-container`, the runner uses its source-tree path instead of `/opt`. LiteLLM is already a project dependency; native Copilot runs additionally require `github-copilot-sdk==1.0.7` and its runtime (`python3 -m copilot download-runtime`) in the active environment.
 
 ---
 
@@ -103,7 +128,7 @@ Benchmark files live in `benchmark/proof-completion/` and `benchmark/proof-from-
 
 ### `tlaps-bench run`
 
-Run one or more benchmarks with an agent backend.
+Run one or more benchmarks with an evaluator backend.
 
 ```bash
 uv run tlaps-bench run [flags]
@@ -111,17 +136,17 @@ uv run tlaps-bench run [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--backend` | `codex` | Agent backend to use |
+| `--backend` | `codex` | Evaluator backend to use |
 | `--mode` | `proof-completion` | Benchmark mode |
 | `--model` | (backend default) | Override the model |
 | `--filter` | (all benchmarks) | Substring match on path, comma-separated |
-| `--jobs` | `1` | Number of parallel agent runs |
-| `--timeout` | `28800` | Per-benchmark agent timeout in seconds |
+| `--jobs` | `1` | Number of parallel backend runs |
+| `--timeout` | `28800` | Per-benchmark backend timeout in seconds |
 | `--check-timeout` | `600` | Per-benchmark checker (tlapm) timeout in seconds |
 | `--output-dir` | auto-generated | Output directory |
 | `--resume` | off | Skip benchmarks already marked `SKIP` or genuine `PASS` (first-attempt or continuation) |
-| `--infra-retries` | `3` | Extra attempts after a transient agent startup/infra failure (0 output tokens); `0` = no inline retries |
-| `--max-continuations` | `0` | Run up to N same-workspace continuation attempts after the first attempt completes without PASS (see [Continuation runs](#continuation-runs)) |
+| `--infra-retries` | `3` agentic; `0` one-shot | Extra attempts after a transient agent startup/infra failure (0 output tokens); strict one-shot backends require `0` |
+| `--max-continuations` | `0` | Run up to N same-workspace continuation attempts after the first attempt completes without PASS; strict one-shot backends require `0` (see [Continuation runs](#continuation-runs)) |
 | `--force-build` | off | Rebuild the Docker image |
 | `--no-container` | off | Run without Docker (requires native setup) |
 | `--keep-container` | off | Retain each agent container after it exits (drop `--rm`) for debugging (see [Debugging a run](#debugging-a-run-keep-container)) |
@@ -314,9 +339,13 @@ This installs the Python environment, downloads tlapm 1.6, compiles the checker 
 
 ---
 
-## Adding a New Agent Backend
+## Backend Architecture
 
-To add support for a new coding agent, create a Python file in `src/evaluator/backends/` that subclasses `AgentBackend`.
+All entries in the backend registry share the neutral `Backend` lifecycle. Tool-using workspace editors inherit `AgenticBackend`; strict single-request implementations inherit the sibling `OneShotBackend`. Prompt construction, command/deadline propagation, option validation, result metadata, request-audit validation, and submission preparation are polymorphic backend hooks, so the common runner and termination classifier do not special-case one-shot names or provider names. Runtime one-shot providers implement the `OneShotProvider` protocol and are selected through a registry; each one-shot backend cross-checks the common request contract against its provider's raw audit evidence.
+
+## Adding a New Agentic Backend
+
+To add support for a new coding agent, create a Python file in `src/evaluator/backends/` that subclasses `AgenticBackend`.
 
 ### 1. Create the backend file
 
@@ -330,10 +359,11 @@ from __future__ import annotations
 import json
 import os
 
-from .base import AgentBackend, detect_firewall_hosts
+from .agentic import AgenticBackend
+from .base import detect_firewall_hosts
 
 
-class MyAgentBackend(AgentBackend):
+class MyAgentBackend(AgenticBackend):
     name = "my_agent"
     install_script = "install-my-agent.sh"
     env_keys = ["MY_AGENT_API_KEY"]

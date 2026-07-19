@@ -18,7 +18,8 @@ inspects a ``TerminationContext`` and returns a reason if it fires, else
 :func:`copilot_session_error`), each branching on ``ctx.backend`` to read its
 own event vocabulary, plus one backend-independent startup rule
 (:func:`agent_startup_failure`) for the CLI dying before emitting a single
-event. Add more by appending to :data:`INFRA_RULES`.
+event. The one-shot rule may also return TIMEOUT for a strictly audited
+provider deadline. Add more by appending to :data:`INFRA_RULES`.
 
 This module only CLASSIFIES. Acting on the classification (the runner auto-
 retries an INFRA_ERROR run whose model did no work) is left to the caller.
@@ -59,7 +60,8 @@ class TerminationContext:
     """The evidence a rule may inspect.
 
     ``backend`` lets a rule apply only to the backend whose event format it
-    understands. ``events()`` lazily parses the agent's JSONL event stream
+    understands. ``approach`` and ``provider`` identify cross-provider contracts
+    without encoding semantics in a backend-name suffix. ``events()`` lazily parses the backend's JSONL event stream
     (empty list on a missing/unreadable file), so rules that don't need it pay
     nothing. ``agent_exit`` and ``error`` are the runner's already-recorded
     fields, available to rules that key off them instead of the stream.
@@ -69,16 +71,25 @@ class TerminationContext:
 
     backend: str
     jsonl_path: str | None
+    approach: str = "agentic"
+    provider: str | None = None
+    request_audit_validator: Callable[[dict[str, object], int], bool] | None = None
     agent_exit: int | None = None
     error: str = ""
     stderr_path: str | None = None
     _events: list | None = None
+    _event_stream_valid: bool | None = None
     _stderr: str | None = None
 
     def events(self) -> list:
         if self._events is None:
-            self._events = _read_events(self.jsonl_path)
+            self._events, self._event_stream_valid = _read_event_stream(self.jsonl_path)
         return self._events
+
+    def event_stream_valid(self) -> bool:
+        if self._events is None:
+            self._events, self._event_stream_valid = _read_event_stream(self.jsonl_path)
+        return self._event_stream_valid is True
 
     def stderr(self) -> str:
         if self._stderr is None:
@@ -86,12 +97,18 @@ class TerminationContext:
         return self._stderr
 
 
-def _read_events(path: str | None) -> list:
-    """Parse a JSONL event stream into a list of dicts, tolerantly (skip blank
-    and unparseable lines; empty list if the file is absent)."""
+def _read_event_stream(path: str | None) -> tuple[list[dict], bool]:
+    """Parse JSONL dictionaries and separately retain stream-integrity evidence.
+
+    Agentic rules keep their historical tolerance by consuming only ``events``.
+    Strict approaches can fail closed when a non-blank line is malformed, is not
+    a JSON object, or the stream cannot be read.
+    """
+
     if not path:
-        return []
-    out: list = []
+        return [], False
+    out: list[dict] = []
+    valid = True
     try:
         with open(path) as f:
             for raw in f:
@@ -99,12 +116,17 @@ def _read_events(path: str | None) -> list:
                 if not raw:
                     continue
                 try:
-                    out.append(json.loads(raw))
+                    event = json.loads(raw)
                 except json.JSONDecodeError:
+                    valid = False
                     continue
-    except FileNotFoundError:
-        return []
-    return out
+                if isinstance(event, dict):
+                    out.append(event)
+                else:
+                    valid = False
+    except (OSError, UnicodeError):
+        return [], False
+    return out, valid
 
 
 def _read_text(path: str | None) -> str:
@@ -219,6 +241,56 @@ def copilot_session_error(ctx: TerminationContext) -> str | None:
     return TerminationReason.INFRA_ERROR
 
 
+def one_shot_result_error(ctx: TerminationContext) -> str | None:
+    """One-shot rule: require an audited terminal result and one clean response.
+
+    The shared one-shot driver emits a terminal ``result`` event. Provider,
+    authentication, transport, or request-guard failures end with
+    ``status == "error"`` and no successful response; grading the untouched
+    ``PROOF OBVIOUS`` file would misreport that infrastructure failure as a
+    model capability failure.
+
+    A propagated provider deadline ends with ``status == "timeout"`` and is a
+    time limit just like the outer runner watchdog, not infrastructure.
+
+    A clean, unique, non-empty response remains a genuine attempt regardless of
+    its text: the runner materializes it and leaves TLA+ syntax and semantics to
+    the grader. Missing or ambiguous response content is recorded as FAIL without
+    grading the untouched placeholder.
+    """
+    if ctx.approach != "one_shot":
+        return None
+    events = ctx.events()
+    if not ctx.event_stream_valid() or not events:
+        return TerminationReason.INFRA_ERROR
+    audits = [event for event in events if event.get("type") == "request_audit"]
+    results = [event for event in events if event.get("type") == "result"]
+    if len(audits) != 1 or len(results) != 1:
+        return TerminationReason.INFRA_ERROR
+
+    def is_count(value: object, expected: int) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and value == expected
+
+    terminal = results[0]
+    request_count = terminal.get("model_requests")
+    if not isinstance(request_count, int) or isinstance(request_count, bool) or request_count not in {0, 1}:
+        return TerminationReason.INFRA_ERROR
+
+    audit = audits[0]
+    if ctx.request_audit_validator is None or not ctx.request_audit_validator(audit, request_count):
+        return TerminationReason.INFRA_ERROR
+
+    responses = [event for event in events if event.get("type") == "response"]
+    if terminal.get("status") == "timeout":
+        return TerminationReason.TIMEOUT if not responses else TerminationReason.INFRA_ERROR
+
+    if not is_count(request_count, 1) or len(responses) != 1:
+        return TerminationReason.INFRA_ERROR
+    if terminal.get("status") != "success":
+        return TerminationReason.INFRA_ERROR
+    return None
+
+
 def agent_startup_failure(ctx: TerminationContext) -> str | None:
     """Backend-independent rule: the CLI died before emitting a single event
     (observed on Copilot: transient model-list/auth/DNS startup failures with a
@@ -251,6 +323,7 @@ INFRA_RULES: list[Rule] = [
     codex_turn_failed,
     claude_code_result_error,
     copilot_session_error,
+    one_shot_result_error,
     agent_startup_failure,
 ]
 
@@ -273,8 +346,8 @@ def classify(ctx: TerminationContext) -> str:
     """Return the run's TerminationReason.
 
     A wall-clock timeout (a LIMIT, backend-independent) takes precedence over the
-    per-backend INFRA rules, so every backend agrees on it; otherwise the first
-    INFRA rule that fires wins, else OK.
+    per-backend rules, so every backend agrees on it; otherwise the first rule
+    that fires wins (including an audited one-shot provider deadline), else OK.
     """
     if is_wall_clock_timeout(ctx):
         return TerminationReason.TIMEOUT
