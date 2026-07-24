@@ -13,6 +13,8 @@ from common.proof_from_scratch_contract import (
     END_AGENT_HELPERS,
     END_AGENT_PROOF,
 )
+from tlacheck.issue import Issue, Severity
+from tlacheck.verdict import Result, Verdict
 
 
 def _task(*, helper="Helper == TRUE", proof="PROOF OBVIOUS", statement="THEOREM Target == TRUE"):
@@ -197,3 +199,170 @@ def test_fixed_scaffold_failure_stops_before_tlapm(tmp_path, monkeypatch):
 
     assert exc_info.value.code == 1
     assert "fixed task scaffold outside editable regions was modified" in output.read_text()
+
+
+def test_required_canonical_sany_failure_is_infrastructure_error(tmp_path, monkeypatch):
+    canonical = tmp_path / "canonical"
+    workspace = tmp_path / "workspace"
+    canonical.mkdir()
+    workspace.mkdir()
+    (canonical / "Task.tla").write_text(_task())
+    (canonical / "Model.tla").write_text("---- MODULE Model ----\n====\n")
+    target = workspace / "Task.tla"
+    target.write_text(_task(proof="PROOF BY TRUE"))
+    (workspace / "Model.tla").write_text("---- MODULE Model ----\n====\n")
+    output = tmp_path / "check.result"
+
+    monkeypatch.setattr(check_proof, "check_sany_valid", lambda _path: ("unavailable", "missing tool"))
+    monkeypatch.setattr(
+        check_proof,
+        "run_killgroup",
+        lambda *_args, **_kwargs: pytest.fail("missing canonical SANY must stop before TLAPM"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_proof",
+            str(target),
+            "--mode",
+            "proof-from-scratch",
+            "--no-container",
+            "--no-git-track",
+            "--canonical-replay-required",
+            "--benchmark-dir",
+            str(canonical),
+            "--tlapm",
+            "/bin/true",
+            "--tlapm-lib",
+            str(tmp_path),
+            "--output",
+            str(output),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_proof.main()
+
+    assert exc_info.value.code == 3
+    assert "canonical SANY validation unavailable" in output.read_text()
+
+
+def test_required_canonical_semantic_failure_is_infrastructure_error(tmp_path, monkeypatch):
+    canonical = tmp_path / "canonical"
+    workspace = tmp_path / "workspace"
+    canonical.mkdir()
+    workspace.mkdir()
+    (canonical / "Task.tla").write_text(_task())
+    (canonical / "Model.tla").write_text("---- MODULE Model ----\n====\n")
+    target = workspace / "Task.tla"
+    target.write_text(_task(proof="PROOF BY TRUE"))
+    (workspace / "Model.tla").write_text("---- MODULE Model ----\n====\n")
+    output = tmp_path / "check.result"
+
+    monkeypatch.setattr(check_proof, "check_sany_valid", lambda _path: ("valid", ""))
+    monkeypatch.setattr(
+        check_proof,
+        "run_tlacheck_engine",
+        lambda *_args, **_kwargs: ([], "engine crashed", None),
+    )
+
+    def summary_only(command, *_args, **_kwargs):
+        if "--summary" in command:
+            return "", "", 0
+        pytest.fail("missing canonical semantic validation must stop before full TLAPM")
+
+    monkeypatch.setattr(check_proof, "run_killgroup", summary_only)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_proof",
+            str(target),
+            "--mode",
+            "proof-from-scratch",
+            "--no-container",
+            "--no-git-track",
+            "--canonical-replay-required",
+            "--benchmark-dir",
+            str(canonical),
+            "--tlapm",
+            "/bin/true",
+            "--tlapm-lib",
+            str(tmp_path),
+            "--output",
+            str(output),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_proof.main()
+
+    assert exc_info.value.code == 3
+    assert "canonical semantic validation unavailable: engine crashed" in output.read_text()
+
+
+def test_helper_policy_failure_stops_before_full_tlapm(tmp_path, monkeypatch):
+    canonical = tmp_path / "canonical"
+    workspace = tmp_path / "workspace"
+    canonical.mkdir()
+    workspace.mkdir()
+    (canonical / "Task.tla").write_text(_task(helper=""))
+    (canonical / "Model.tla").write_text("---- MODULE Model ----\n====\n")
+    target = workspace / "Task.tla"
+    target.write_text(_task(helper="CONSTANT C", proof="PROOF BY TRUE"))
+    (workspace / "Model.tla").write_text("---- MODULE Model ----\n====\n")
+    output = tmp_path / "check.result"
+
+    issue = Issue(
+        "HELPER_REGION_VIOLATION",
+        Severity.CHEATING,
+        "CONSTANT declarations are not allowed in the helper region",
+    )
+    engine_result = Result(Verdict.CHEATING, [issue])
+    monkeypatch.setattr(check_proof, "check_sany_valid", lambda _path: ("valid", ""))
+    monkeypatch.setattr(
+        check_proof,
+        "run_tlacheck_engine",
+        lambda *_args, **_kwargs: ([str(issue)], "", engine_result),
+    )
+    calls = []
+
+    def fake_run(command, *_args, **_kwargs):
+        calls.append(command)
+        if "--summary" in command:
+            return "", "", 0
+        pytest.fail("helper policy failure must stop before the full TLAPM run")
+
+    monkeypatch.setattr(check_proof, "run_killgroup", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_proof",
+            str(target),
+            "--mode",
+            "proof-from-scratch",
+            "--no-container",
+            "--no-git-track",
+            "--canonical-replay-required",
+            "--benchmark-dir",
+            str(canonical),
+            "--tlapm",
+            "/bin/true",
+            "--tlapm-lib",
+            str(tmp_path),
+            "--output",
+            str(output),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_proof.main()
+
+    result = output.read_text()
+    assert exc_info.value.code == 1
+    assert len(calls) == 1
+    assert "--summary" in calls[0]
+    assert "helper_region_valid" in result
+    assert "CHEAT-DETECTED: helper_region_valid" in result

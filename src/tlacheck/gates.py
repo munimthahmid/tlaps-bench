@@ -84,6 +84,7 @@ class GraderInputs:
     smuggled_module: bool = False  # agent-created module sneaking content in
     preamble_modified: bool = False  # proof-completion preamble (defs/CONSTANT/VARIABLE/ASSUME) changed
     scaffold_modified: bool = False  # proof-from-scratch fixed text outside editable regions changed
+    helper_policy_violated: bool = False
     # Gate B — discharge
     tlapm_obligations_proved: bool = False  # every generated obligation PROVED, none failed
     n_missing: int = 0  # `--strict` MISSING steps (agent gaps)
@@ -123,6 +124,7 @@ VECTOR_GATE = {
     "STATEMENT_MODIFIED": Gate.A_IDENTITY,
     "EXTRA_AXIOM": Gate.A_IDENTITY,
     "SMUGGLED_MODULE": Gate.A_IDENTITY,
+    "HELPER_REGION_VIOLATION": Gate.A_IDENTITY,
     "ADMITTED_STATEMENT": Gate.B_DISCHARGE,
     "ADMITTED_FALLBACK": Gate.B_DISCHARGE,
     "INCOMPLETE_PROOF": Gate.B_DISCHARGE,
@@ -145,6 +147,7 @@ INTEGRITY_CHECKS = frozenset(
         "no_smuggled_definition",
         "preamble_unchanged",
         "scaffold_unchanged",
+        "helper_region_valid",
         "no_admitted_goal",
         "no_added_omitted",
         "admitted_set_eq_baseline",
@@ -199,6 +202,13 @@ def grade(inp: GraderInputs) -> GradeResult:
             Status.WIRED,
             not inp.scaffold_modified,
             "fixed task text outside the proof-from-scratch editable regions was modified",
+        ),
+        Check(
+            "helper_region_valid",
+            Gate.A_IDENTITY,
+            Status.WIRED,
+            not inp.helper_policy_violated,
+            "an editable region contains a forbidden, misplaced, or unproved declaration",
         ),
         Check(
             "no_smuggled_definition",
@@ -299,6 +309,7 @@ def from_tlacheck(
         smuggled_module="SMUGGLED_MODULE" in vectors,
         preamble_modified=preamble_modified,
         scaffold_modified=scaffold_modified,
+        helper_policy_violated="HELPER_REGION_VIOLATION" in vectors,
         tlapm_obligations_proved=tlapm_obligations_proved,
         n_missing=n_missing,
         admitted_goal=bool(vectors & {"ADMITTED_STATEMENT", "ADMITTED_FALLBACK"}),

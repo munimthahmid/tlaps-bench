@@ -150,7 +150,7 @@ A mode defines what the agent is asked to do.
 | Mode | What the agent sees | What it must do |
 |------|---------------------|-----------------|
 | `proof-completion` | Full scaffolding. Preceding proofs marked `PROOF OMITTED`. Last theorem has `PROOF OBVIOUS`. | Replace `PROOF OBVIOUS` with a valid proof. Cannot change anything above it. |
-| `proof-from-scratch` | Only the model (definitions, constants, variables) and the target theorem statement with `PROOF OBVIOUS`. | Invent the entire proof structure, including helper lemmas. |
+| `proof-from-scratch` | An editable target theorem plus only its declared read-only model/definition context. | Invent the proof structure, including fresh helper definitions and proved lemmas. |
 
 Select a mode with `--mode`:
 
@@ -160,6 +160,14 @@ uv run tlaps-bench run --backend codex --model gpt-5.5 --mode proof-from-scratch
 ```
 
 Benchmark files live in `benchmark/proof-completion/` and `benchmark/proof-from-scratch/` respectively.
+
+### Proof-from-scratch trust boundary
+
+`benchmark/proof-from-scratch/manifest.json` is the authority for task discovery and context. Each entry names one editable target and its complete local TLA+ dependency closure. The runner does not infer dependencies from neighboring filenames, so sibling tasks and unrelated definition modules never enter the workspace, prompt, input artifact, or verifier. A missing or invalid manifest stops the run.
+
+The target contains separate `AGENT HELPERS` and `AGENT PROOF` marker pairs. Only their interiors may change; the module header, imports, target statement, marker lines, and other fixed text must remain byte-for-byte equal to the canonical target. The helper region accepts fresh operator definitions, module-level `USE DEF` / `HIDE DEF`, and fully proved named lemmas or theorems. Constants, variables, assumptions, instances, nested modules, shadowed names, and module-level declarations in the proof region are rejected.
+
+Docker mounts every context file read-only while leaving only the target writable. Native `--no-container` runs copy context files with mode `0444`, which is advisory because another process running as the same user can change permissions. This does not affect grading soundness: after the agent exits, the runner builds a fresh canonical snapshot from the manifest sources and checks the submitted target with only that unexposed context. Required canonical SANY or semantic validation failures are reported as infrastructure errors rather than accepted or scored as proof failures.
 
 ---
 

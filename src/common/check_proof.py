@@ -1114,6 +1114,9 @@ def main():
         if status == "invalid":
             print(f"FAIL {SANY_INVALID_MARKER} — {detail[:300]}")
             sys.exit(1)
+        if args.canonical_replay_required:
+            print(f"ERROR: canonical SANY validation unavailable: {detail[:300]}")
+            sys.exit(3)
         print(f"WARNING: SANY check unavailable ({detail[:200]}) — could not run; not treated as invalid")
         sys.exit(0)
 
@@ -1209,6 +1212,9 @@ def main():
 
         semantic_filepath = tmp_file if args.canonical_replay_required else filepath
         sany_status, sany_detail = check_sany_valid(semantic_filepath)
+        if args.canonical_replay_required and sany_status == "unavailable":
+            emit(f"ERROR: canonical SANY validation unavailable: {sany_detail[:300]}")
+            write_result_and_exit(3)
         static_fail = bool(real_issues) or sany_status == "invalid"
         if args.keep_verifying or not static_fail:
             # --summary is frontend-only (no backends), but it still walks the
@@ -1229,6 +1235,9 @@ def main():
             engine_issues, engine_reason, engine_result = run_tlacheck_engine(
                 semantic_filepath, target_name, summary_output, False, benchmark_dir=benchmark_dir
             )
+            if args.canonical_replay_required and not static_fail and engine_result is None:
+                emit(f"ERROR: canonical semantic validation unavailable: {engine_reason or 'unknown error'}")
+                write_result_and_exit(3)
 
         # Fail fast on tampering (cheat findings / SANY-invalid) only — an
         # honest incomplete proof still gets the full run, keeping the

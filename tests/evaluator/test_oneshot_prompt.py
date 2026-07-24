@@ -92,15 +92,32 @@ def test_agentic_prompts_include_community_modules(tmp_path):
         assert '-I /custom/tlapm/lib -I "$COMMUNITY_LIB"' in prompt
 
 
-def test_proof_from_scratch_one_shot_prompt_allows_fully_proved_helpers(tmp_path):
+def test_proof_from_scratch_one_shot_prompt_enforces_marked_regions(tmp_path):
     target = tmp_path / "Target_Goal.tla"
     target.write_text(TARGET)
 
     prompt = _mode(ProofFromScratch, tmp_path).build_one_shot_prompt(str(target), [])
 
-    assert "Return the complete contents of the target module" in prompt
-    assert "fully proved helper lemmas" in prompt
-    assert "every helper theorem or lemma must have a complete proof" in prompt
+    assert "Return a complete, valid TLAPS solution" in prompt
+    assert r"\* BEGIN AGENT HELPERS" in prompt
+    assert r"\* BEGIN AGENT PROOF" in prompt
+    assert "The target is the only editable file" in prompt
+    assert "fully proved named helper lemmas" in prompt
+    assert "Every helper `LEMMA` or `THEOREM` must be named and fully proved" in prompt
+    assert "Do not add or change dependency modules, imports" in prompt
     assert "Do not return a patch" in prompt
     assert "Keep editing" not in prompt
     assert "check_proof_bin" not in prompt
+
+
+def test_proof_from_scratch_agentic_prompt_enforces_same_boundary(tmp_path):
+    mode = _mode(ProofFromScratch, tmp_path)
+
+    prompt = mode.build_prompt("Target_Goal.tla", "/opt/tlapm", "/opt/tlapm/lib")
+
+    assert "This is the only editable file" in prompt
+    assert r"\* BEGIN AGENT HELPERS" in prompt
+    assert r"\* BEGIN AGENT PROOF" in prompt
+    assert "Do not change the module header, imports, marker lines" in prompt
+    assert "Every helper `LEMMA` or `THEOREM` must be named and fully proved" in prompt
+    assert "check_proof_bin Target_Goal.tla --mode proof-from-scratch" in prompt
