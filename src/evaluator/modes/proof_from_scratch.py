@@ -20,6 +20,7 @@ from .base import Mode
 class ProofFromScratch(Mode):
     name = "proof-from-scratch"
     description = "Proof from scratch — agent invents the proof structure"
+    read_only_dependencies = True
 
     @cached_property
     def _boundaries(self) -> tuple[TaskBoundary, ...]:

@@ -46,6 +46,7 @@ def _referenced_modules(text: str) -> set[str]:
 class Mode(ABC):  # noqa: B024 - ABC used as a non-instantiable base marker; subclasses set class attrs
     name: str = ""
     description: str = ""
+    read_only_dependencies: bool = False
 
     def __init__(self, benchmark_root: str, checker_binary: str):
         """

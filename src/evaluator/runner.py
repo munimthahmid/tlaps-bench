@@ -24,6 +24,7 @@ import select
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -281,7 +282,15 @@ def _make_canonical_dir(name_no_ext: str, benchmark_path: str, basename: str, de
         raise
 
 
-def _make_workspace(backend_name: str, name_no_ext: str, benchmark_path: str, basename: str, deps: list[str]) -> str:
+def _make_workspace(
+    backend_name: str,
+    name_no_ext: str,
+    benchmark_path: str,
+    basename: str,
+    deps: list[str],
+    *,
+    read_only_dependencies: bool = False,
+) -> str:
     """Fresh isolated workspace: benchmark + dependencies in a git repo (the
     baseline commit is the cheating check's reference point)."""
     workspace = tempfile.mkdtemp(prefix=f"{backend_name}_bench_{name_no_ext}_")
@@ -303,6 +312,11 @@ def _make_workspace(backend_name: str, name_no_ext: str, benchmark_path: str, ba
                 "GIT_COMMITTER_EMAIL": "bench@bench",
             },
         )
+        if read_only_dependencies:
+            target_path = os.path.join(workspace, basename)
+            os.chmod(target_path, os.stat(target_path).st_mode | stat.S_IWUSR)
+            for dep in deps:
+                os.chmod(os.path.join(workspace, os.path.basename(dep)), 0o444)
         return workspace
     except Exception:
         shutil.rmtree(workspace, ignore_errors=True)
@@ -360,6 +374,7 @@ def _run_backend_with_retries(
     """
     backend = item.backend
     mode = item.mode
+    read_only_dependencies = getattr(mode, "read_only_dependencies", False)
     workspace = fixed_workspace
     canonical_dir = None
     active_secs = 0.0
@@ -381,7 +396,14 @@ def _run_backend_with_retries(
 
             canonical_dir = _make_canonical_dir(name_no_ext, item.benchmark_path, basename, deps)
             if fixed_workspace is None:
-                workspace = _make_workspace(backend.name, name_no_ext, item.benchmark_path, basename, deps)
+                workspace = _make_workspace(
+                    backend.name,
+                    name_no_ext,
+                    item.benchmark_path,
+                    basename,
+                    deps,
+                    read_only_dependencies=read_only_dependencies,
+                )
 
             wait_for_memory(item.min_free_gb, 120, log_prefix=f"[{name_no_ext}] ")
 
@@ -399,7 +421,19 @@ def _run_backend_with_retries(
                 t0 = time.time()
                 if item.use_container:
                     _run_backend_container(
-                        item, backend, workspace, agent_dir, agent_jsonl, prompt, result, canonical_dir
+                        item,
+                        backend,
+                        workspace,
+                        agent_dir,
+                        agent_jsonl,
+                        prompt,
+                        result,
+                        canonical_dir,
+                        read_only_files=(
+                            [os.path.join(workspace, os.path.basename(dep)) for dep in deps]
+                            if read_only_dependencies
+                            else None
+                        ),
                     )
                 else:
                     _run_backend_local(
@@ -1050,6 +1084,7 @@ def _run_backend_container(
     prompt: str,
     result: dict,
     canonical_dir: str | None = None,
+    read_only_files: list[str] | None = None,
 ) -> None:
     """Run a backend inside Docker with live output and timeout draining."""
     runner = ContainerRunner()
@@ -1067,6 +1102,7 @@ def _run_backend_container(
         # Same canonical snapshot the grader reads, bind-mounted read-only so the
         # agent's own check_proof_bin runs the identical cheat oracle the grader will.
         benchmark_dir=canonical_dir or "",
+        read_only_files=[(path, f"/workspace/{os.path.basename(path)}") for path in (read_only_files or [])],
         env=backend_env,
         firewall_hosts=backend.firewall_hosts(),
         install_script=backend.install_script,

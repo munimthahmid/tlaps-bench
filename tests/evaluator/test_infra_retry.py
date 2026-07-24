@@ -308,6 +308,28 @@ def test_make_workspace_cleans_up_on_setup_failure(tmp_path, monkeypatch):
     assert created and not os.path.isdir(created[0])
 
 
+def test_make_workspace_can_make_only_dependencies_read_only(tmp_path):
+    benchmark = tmp_path / "Bar.tla"
+    dependency = tmp_path / "Model.tla"
+    benchmark.write_text(BENCH_TEXT)
+    benchmark.chmod(0o444)
+    dependency.write_text("---- MODULE Model ----\n====\n")
+
+    workspace = runner._make_workspace(
+        "copilot",
+        "Bar",
+        str(benchmark),
+        benchmark.name,
+        [str(dependency)],
+        read_only_dependencies=True,
+    )
+    try:
+        assert os.stat(os.path.join(workspace, benchmark.name)).st_mode & 0o200
+        assert os.stat(os.path.join(workspace, dependency.name)).st_mode & 0o777 == 0o444
+    finally:
+        runner.shutil.rmtree(workspace)
+
+
 def test_startup_failure_retried_and_final_attempt_graded(tmp_path, monkeypatch):
     backend = _ScriptedBackend()
     agent = _install_agent(monkeypatch, backend, [STARTUP, GENUINE_FAIL])

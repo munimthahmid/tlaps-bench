@@ -122,6 +122,7 @@ class ContainerConfig:
     workspace: str = ""  # host path, mounted to /workspace (rw)
     result_dir: str = ""  # host path, mounted to /results (rw)
     benchmark_dir: str = ""  # host path, mounted to /benchmark (ro) for tamper-proof baseline
+    read_only_files: list[tuple[str, str]] = field(default_factory=list)  # (host path, container path)
     env: dict[str, str] = field(default_factory=dict)
     firewall_hosts: list[str] = field(default_factory=list)
     install_script: str | None = None  # run at container start before agent cmd
@@ -281,6 +282,8 @@ class ContainerRunner:
         # Workspace and result mounts
         if config.workspace:
             args.extend(["-v", f"{config.workspace}:/workspace:rw"])
+        for host_path, container_path in config.read_only_files:
+            args.extend(["-v", f"{host_path}:{container_path}:ro"])
         if config.result_dir:
             args.extend(["-v", f"{config.result_dir}:/results:rw"])
         if config.benchmark_dir:

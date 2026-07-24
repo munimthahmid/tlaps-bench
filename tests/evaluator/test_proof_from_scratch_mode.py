@@ -8,6 +8,7 @@ import pickle
 import pytest
 
 from common.proof_from_scratch_contract import ManifestError
+from evaluator.modes.proof_completion import ProofCompletion
 from evaluator.modes.proof_from_scratch import ProofFromScratch
 
 
@@ -25,6 +26,11 @@ def _write_manifest(suite, manifest):
 
 def _mode(tmp_path):
     return ProofFromScratch(str(tmp_path), "/checker")
+
+
+def test_only_proof_from_scratch_requires_read_only_dependencies():
+    assert ProofFromScratch.read_only_dependencies is True
+    assert ProofCompletion.read_only_dependencies is False
 
 
 def test_discovers_only_sorted_manifest_tasks(tmp_path):
