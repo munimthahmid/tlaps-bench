@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from common.proof_from_scratch_contract import EditableRegionError, parse_editable_regions
 from evaluator.termination import TerminationContext, TerminationReason
 from evaluator.usage import RequestUsage, UsageCost, UsageSummary, nonnegative_float, nonnegative_int
 
@@ -79,6 +80,30 @@ def _unwrap_tla_fence(response: str) -> str:
     if match.group("language").strip().lower() != "tla":
         return response
     return match.group("body")
+
+
+def _reconstruct_marked_solution(target: Path, solution: str) -> str | None:
+    """Apply only editable-region bytes when ``target`` uses the marked contract.
+
+    One-shot models return a complete module and commonly reformat immutable
+    scaffold while copying it. The response is data, not an in-place edit, so
+    rebuild from the canonical target instead of treating harmless retyping as
+    tampering. ``None`` means the canonical target is marked but the response
+    does not contain one unambiguous pair of editable regions.
+    """
+
+    try:
+        with target.open(encoding="utf-8", newline="") as stream:
+            canonical_source = stream.read()
+        canonical_regions = parse_editable_regions(canonical_source)
+    except (OSError, UnicodeError, EditableRegionError):
+        return solution
+
+    try:
+        submitted_regions = parse_editable_regions(solution)
+    except EditableRegionError:
+        return None
+    return canonical_regions.render(helpers=submitted_regions.helpers, proof=submitted_regions.proof)
 
 
 class OneShotBackend(Backend):
@@ -436,6 +461,9 @@ class OneShotBackend(Backend):
         solution = _unwrap_tla_fence(responses[0])
 
         target = Path(destination)
+        solution = _reconstruct_marked_solution(target, solution)
+        if solution is None:
+            return False
         temporary: str | None = None
         try:
             with tempfile.NamedTemporaryFile(

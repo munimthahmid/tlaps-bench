@@ -9,6 +9,13 @@ from pathlib import Path
 
 import pytest
 
+from common.proof_from_scratch_contract import (
+    BEGIN_AGENT_HELPERS,
+    BEGIN_AGENT_PROOF,
+    END_AGENT_HELPERS,
+    END_AGENT_PROOF,
+    parse_editable_regions,
+)
 from evaluator import runner
 from evaluator.backends import get_backend, list_backends
 from evaluator.backends.agentic import AgenticBackend
@@ -17,6 +24,24 @@ from evaluator.backends.litellm_oneshot import LiteLLMOneShotBackend
 from evaluator.backends.oneshot import OneShotBackend
 
 MODULE = "---- MODULE Example ----\nTHEOREM Target == TRUE\nPROOF OBVIOUS\n====\n"
+
+
+def _marked_module(*, helper="", proof="PROOF OBVIOUS"):
+    return "\n".join(
+        (
+            "---- MODULE Example ----",
+            "EXTENDS Naturals",
+            BEGIN_AGENT_HELPERS,
+            helper,
+            END_AGENT_HELPERS,
+            "THEOREM Target == TRUE",
+            BEGIN_AGENT_PROOF,
+            proof,
+            END_AGENT_PROOF,
+            "====",
+            "",
+        )
+    )
 
 
 def _write_events(path, *events):
@@ -490,6 +515,47 @@ def test_materializes_unique_tla_fence(tmp_path):
 
     assert CopilotOneShotBackend().materialize_solution(str(events), str(destination)) is True
     assert destination.read_text() == MODULE
+
+
+def test_marked_solution_reconstructs_only_editable_regions(tmp_path):
+    events = tmp_path / "output.jsonl"
+    destination = tmp_path / "Example.tla"
+    canonical = _marked_module()
+    destination.write_text(canonical)
+    response = _marked_module(helper="Fresh == TRUE", proof="PROOF BY Fresh")
+    response = response.replace("THEOREM Target == TRUE", "  THEOREM Target == FALSE").removesuffix("\n")
+    _write_events(events, {"type": "response", "text": response})
+
+    assert LiteLLMOneShotBackend().materialize_solution(str(events), str(destination)) is True
+    expected = parse_editable_regions(canonical).render(helpers="Fresh == TRUE\n", proof="PROOF BY Fresh\n")
+    assert destination.read_text() == expected
+
+
+def test_marked_solution_preserves_canonical_crlf_scaffold(tmp_path):
+    events = tmp_path / "output.jsonl"
+    destination = tmp_path / "Example.tla"
+    canonical = _marked_module().replace("\n", "\r\n")
+    with destination.open("w", newline="") as stream:
+        stream.write(canonical)
+    response = _marked_module(helper="Fresh == TRUE", proof="PROOF BY Fresh")
+    _write_events(events, {"type": "response", "text": response})
+
+    assert LiteLLMOneShotBackend().materialize_solution(str(events), str(destination)) is True
+    expected = parse_editable_regions(canonical).render(helpers="Fresh == TRUE\n", proof="PROOF BY Fresh\n")
+    with destination.open(newline="") as stream:
+        assert stream.read() == expected
+
+
+def test_marked_solution_rejects_ambiguous_regions_without_overwriting(tmp_path):
+    events = tmp_path / "output.jsonl"
+    destination = tmp_path / "Example.tla"
+    canonical = _marked_module()
+    destination.write_text(canonical)
+    response = canonical.replace(BEGIN_AGENT_HELPERS, f"{BEGIN_AGENT_HELPERS}\n{BEGIN_AGENT_HELPERS}", 1)
+    _write_events(events, {"type": "response", "text": response})
+
+    assert LiteLLMOneShotBackend().materialize_solution(str(events), str(destination)) is False
+    assert destination.read_text() == canonical
 
 
 def test_materializes_non_tla_structures_verbatim_for_grader_validation(tmp_path):

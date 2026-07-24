@@ -281,6 +281,8 @@ def test_parse_editable_regions_preserves_fixed_and_editable_bytes():
     assert regions.fixed_middle == (f"{END_AGENT_HELPERS}\n\nTHEOREM Target == TRUE\n{BEGIN_AGENT_PROOF}\n")
     assert regions.proof == "PROOF OBVIOUS\n"
     assert regions.fixed_suffix == f"{END_AGENT_PROOF}\n====\n"
+    assert regions.helper_line_bounds == (5, 5)
+    assert regions.proof_line_bounds == (10, 10)
     assert regions.render() == source
 
     edited = regions.render(helpers="Fresh == 1\n", proof="PROOF BY Fresh\n")
@@ -300,7 +302,18 @@ def test_parse_editable_regions_preserves_crlf_marker_bytes():
     assert regions.fixed_prefix.endswith(f"{BEGIN_AGENT_HELPERS}\r\n")
     assert regions.fixed_middle.endswith(f"{BEGIN_AGENT_PROOF}\r\n")
     assert regions.fixed_suffix.startswith(f"{END_AGENT_PROOF}\r\n")
+    assert regions.helper_line_bounds == (5, 5)
+    assert regions.proof_line_bounds == (10, 10)
     assert regions.render() == source
+
+
+def test_editable_line_bounds_use_only_sany_newlines():
+    source = _canonical_source().replace("Helper == TRUE", "\\* padding\fcontinuation")
+
+    regions = parse_editable_regions(source)
+
+    assert regions.helper_line_bounds == (5, 5)
+    assert regions.proof_line_bounds == (10, 10)
 
 
 @pytest.mark.parametrize("marker", [BEGIN_AGENT_HELPERS, END_AGENT_HELPERS, BEGIN_AGENT_PROOF, END_AGENT_PROOF])

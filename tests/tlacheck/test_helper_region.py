@@ -28,7 +28,7 @@ from tlacore.provenance import Provenance
 from tlacore.sany.dump import SanyError, dump_normalized
 
 
-def _source(helper: str) -> str:
+def _source(helper: str, proof: str = "PROOF OBVIOUS") -> str:
     return "\n".join(
         (
             "---- MODULE Task ----",
@@ -38,7 +38,7 @@ def _source(helper: str) -> str:
             END_AGENT_HELPERS,
             "THEOREM Target == TRUE",
             BEGIN_AGENT_PROOF,
-            "PROOF OBVIOUS",
+            proof,
             END_AGENT_PROOF,
             "====",
             "",
@@ -66,8 +66,8 @@ def _module(**overrides) -> Module:
     return Module(**values)
 
 
-def _context(helper: str, module: Module) -> CheckContext:
-    source = _source(helper)
+def _context(helper: str, module: Module, proof: str = "PROOF OBVIOUS") -> CheckContext:
+    source = _source(helper, proof)
     return CheckContext(
         target_name="Task",
         solution_dir=".",
@@ -186,6 +186,22 @@ def test_rejects_module_declarations_in_proof_region(field, declaration):
 
     assert len(issues) == 1
     assert "belong in the helper region" in issues[0].message
+
+
+def test_proof_bounds_match_sany_when_helper_comment_contains_form_feed(tmp_path):
+    model = tmp_path / "Model.tla"
+    task = tmp_path / "Task.tla"
+    helper = "\\* padding\fcontinuation"
+    proof = "PROOF OBVIOUS  CONSTANT C"
+    model.write_text("---- MODULE Model ----\n====\n")
+    task.write_text(_source(helper, proof))
+
+    module = dump_normalized(str(task), dep_dir=str(tmp_path))
+    issues = helper_region.check(_context(helper, module, proof))
+
+    assert [constant.loc.line_start for constant in module.constants] == [8]
+    assert len(issues) == 1
+    assert "module-level CONSTANT declarations belong in the helper region" in issues[0].message
 
 
 def test_rejects_nested_module():

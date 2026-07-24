@@ -1422,8 +1422,6 @@ def main():
                 preamble_modified=legacy_preamble_modified,
                 proof_omitted=legacy_proof_omitted,
                 scaffold_modified=bool(boundary_issues),
-                canonical_replay_required=args.canonical_replay_required,
-                graded_on_canonical=args.canonical_replay_required and benchmark_dir is not None,
                 legacy_issue_vectors=legacy_vectors,
             )
         )

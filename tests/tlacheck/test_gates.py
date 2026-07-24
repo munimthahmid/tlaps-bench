@@ -30,8 +30,6 @@ CLEAN = GraderInputs(
     proof_omitted=False,
     admitted_extra=False,
     deps_modified=False,
-    canonical_replay_required=True,
-    graded_on_canonical=True,
 )
 
 
@@ -55,7 +53,6 @@ def test_each_wired_failure_fails_the_run():
         ("admitted_goal", Gate.B_DISCHARGE, True),
         ("proof_omitted", Gate.B_DISCHARGE, True),
         ("deps_modified", Gate.C_TRUST, True),
-        ("graded_on_canonical", Gate.C_TRUST, False),
     ]
     for field_name, gate, bad_value in cases:
         inp = GraderInputs(**{**CLEAN.__dict__, field_name: bad_value})
@@ -75,7 +72,7 @@ def test_placeholders_fail_open():
     # On a clean input, the only PLACEHOLDER/PARTIAL checks must NOT block.
     r = grade(CLEAN)
     placeholders = [c for c in r.checks if c.status is Status.PLACEHOLDER]
-    assert placeholders, "scaffold should carry explicit placeholders (W4/W5)"
+    assert placeholders, "scaffold should carry the explicit W4 placeholder"
     assert all(c.ok for c in placeholders), "placeholders must fail-open"
     assert r.passed
 
@@ -120,26 +117,8 @@ def test_from_tlacheck_legacy_signals_flow_to_gates():
 
 
 def test_from_tlacheck_clean_result_passes():
-    inp = from_tlacheck(
-        _result(), tlapm_obligations_proved=True, n_missing=0, sany_valid=True, graded_on_canonical=True
-    )
+    inp = from_tlacheck(_result(), tlapm_obligations_proved=True, n_missing=0, sany_valid=True)
     assert grade(inp).passed
-
-
-def test_required_canonical_replay_fails_when_not_performed():
-    inp = from_tlacheck(
-        _result(),
-        tlapm_obligations_proved=True,
-        n_missing=0,
-        sany_valid=True,
-        canonical_replay_required=True,
-        graded_on_canonical=False,
-    )
-
-    result = grade(inp)
-
-    assert not result.passed
-    assert result.failed_integrity_checks() == ["graded_on_canonical"]
 
 
 def test_from_tlacheck_ignores_warnings():

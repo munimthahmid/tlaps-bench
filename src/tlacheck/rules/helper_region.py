@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 from common.proof_from_scratch_contract import (
-    BEGIN_AGENT_HELPERS,
-    BEGIN_AGENT_PROOF,
-    END_AGENT_HELPERS,
-    END_AGENT_PROOF,
     EditableRegionError,
     parse_editable_regions,
 )
@@ -15,18 +11,6 @@ from ..context import CheckContext
 from ..issue import Issue, Severity
 
 name = "HELPER_REGION_VIOLATION"
-
-
-def _editable_lines(source: str) -> tuple[tuple[int, int], tuple[int, int]] | None:
-    lines = source.splitlines()
-    try:
-        begin_helpers = lines.index(BEGIN_AGENT_HELPERS)
-        end_helpers = lines.index(END_AGENT_HELPERS)
-        begin_proof = lines.index(BEGIN_AGENT_PROOF)
-        end_proof = lines.index(END_AGENT_PROOF)
-    except ValueError:
-        return None
-    return (begin_helpers + 2, end_helpers), (begin_proof + 2, end_proof)
 
 
 def _inside(loc, bounds: tuple[int, int]) -> bool:
@@ -60,14 +44,12 @@ def check(ctx: CheckContext) -> list[Issue]:
         return []
     try:
         parse_editable_regions(ctx.baseline_source)
-        parse_editable_regions(ctx.solution_source)
+        submitted_regions = parse_editable_regions(ctx.solution_source)
     except EditableRegionError:
         return []  # The fixed-region integrity check owns malformed markers.
 
-    bounds = _editable_lines(ctx.solution_source)
-    if bounds is None:
-        return []
-    helper_bounds, proof_bounds = bounds
+    helper_bounds = submitted_regions.helper_line_bounds
+    proof_bounds = submitted_regions.proof_line_bounds
 
     issues: list[Issue] = []
     forbidden = (

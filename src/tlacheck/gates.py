@@ -15,8 +15,8 @@ This module IS the framework (W0): a benchmark solution passes iff
                  restated lemma, the agent added no PROOF OMITTED step, and (W3)
                  the only admitted steps are exactly the baseline's GIVEN lemmas.
   C — TRUST:     grading ran on trusted files — a given dependency was not
-                 modified, and (W5) grading replays on canonical read-only
-                 deps/model with tlapm unmodified.
+                 modified. Evaluator modes that require canonical replay enforce
+                 it as a fail-closed execution precondition before this gate.
 
 "Cheating" is NOT a separate verdict: a cheat is simply some gate failing, so the
 outcome is BINARY PASS/FAIL. The per-check reasons are kept for the agent's
@@ -37,7 +37,8 @@ than today's checker. Never delete a WIRED check before its stronger replacement
 
 Roadmap (status per check below): W3 tighten admitted-set to a baseline set-diff;
 W4 semantic statement-match (catch operator redefinition). W5 trusted-file replay
-is wired for evaluator modes that require it.
+is enforced by ``check_proof`` control flow rather than a caller-reported gate
+boolean.
 """
 
 from __future__ import annotations
@@ -93,8 +94,6 @@ class GraderInputs:
     admitted_extra: bool = False  # agent added an admitted lemma beyond baseline (W3)
     # Gate C — trust
     deps_modified: bool = False  # a given dependency file was changed
-    canonical_replay_required: bool = False
-    graded_on_canonical: bool = False  # grading used canonical read-only files
 
 
 @dataclass
@@ -152,7 +151,6 @@ INTEGRITY_CHECKS = frozenset(
         "no_added_omitted",
         "admitted_set_eq_baseline",
         "deps_unmodified",
-        "graded_on_canonical",
     }
 )
 
@@ -258,13 +256,6 @@ def grade(inp: GraderInputs) -> GradeResult:
         Check(
             "deps_unmodified", Gate.C_TRUST, Status.WIRED, not inp.deps_modified, "a given dependency file was modified"
         ),
-        Check(
-            "graded_on_canonical",
-            Gate.C_TRUST,
-            Status.WIRED,
-            not inp.canonical_replay_required or inp.graded_on_canonical,
-            "canonical dependency replay was required but not performed",
-        ),
     ]
     return GradeResult(passed=all(c.ok for c in checks), checks=checks)
 
@@ -278,8 +269,6 @@ def from_tlacheck(
     preamble_modified=False,
     proof_omitted=False,
     scaffold_modified=False,
-    canonical_replay_required=False,
-    graded_on_canonical=False,
     legacy_issue_vectors=None,
 ):
     """Migrate existing detection onto the gate inputs (W1).
@@ -293,8 +282,8 @@ def from_tlacheck(
     ``preamble_modified`` (proof-completion byte-match), ``scaffold_modified``
     (proof-from-scratch fixed-region byte-match), ``proof_omitted`` (agent-added
     PROOF OMITTED / bare OMITTED), and ``legacy_issue_vectors`` are
-    caller-computed detections. ``graded_on_canonical`` records whether required
-    trusted replay actually ran.
+    caller-computed detections. Required canonical replay is a fail-closed
+    checker precondition, not a caller-reported gate input.
     """
     vectors = {
         i.vector
@@ -318,6 +307,4 @@ def from_tlacheck(
         # WIRED no_admitted_goal check covers the known cases until W3 lands.
         admitted_extra=False,
         deps_modified="DEPENDENCY_MODIFIED" in vectors,
-        canonical_replay_required=canonical_replay_required,
-        graded_on_canonical=graded_on_canonical,
     )

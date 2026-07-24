@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -30,6 +30,7 @@ EDITABLE_REGION_MARKERS = (
 )
 
 _MODULE_HEADER = re.compile(r"^-+\s*MODULE\s+([A-Za-z_]\w*)\s*-+\s*$")
+_SOURCE_NEWLINE = re.compile(r"\r\n|\r|\n")
 
 
 class ProofFromScratchContractError(ValueError):
@@ -67,6 +68,8 @@ class EditableRegions:
     fixed_middle: str
     proof: str
     fixed_suffix: str
+    helper_line_bounds: tuple[int, int]
+    proof_line_bounds: tuple[int, int]
 
     @property
     def fixed_segments(self) -> tuple[str, str, str]:
@@ -310,17 +313,31 @@ def _line_without_ending(line: str) -> str:
     return line
 
 
+def _physical_lines(source: str) -> Iterator[tuple[int, int, str]]:
+    """Yield source offsets and text for CR/LF-delimited source lines.
+
+    Python's ``str.splitlines`` also treats form feed, vertical tab, NEL, and
+    Unicode line separators as new lines. SANY does not, so using it for policy
+    locations can make marker bounds disagree with SANY's ``Loc`` line numbers.
+    """
+
+    start = 0
+    for newline in _SOURCE_NEWLINE.finditer(source):
+        end = newline.end()
+        yield start, end, source[start:end]
+        start = end
+    if start < len(source):
+        yield start, len(source), source[start:]
+
+
 def parse_editable_regions(source: str) -> EditableRegions:
     """Split a task around its four exact, unique, ordered marker lines."""
 
-    positions: dict[str, list[tuple[int, int]]] = {marker: [] for marker in EDITABLE_REGION_MARKERS}
-    offset = 0
-    for line in source.splitlines(keepends=True):
-        line_end = offset + len(line)
+    positions: dict[str, list[tuple[int, int, int]]] = {marker: [] for marker in EDITABLE_REGION_MARKERS}
+    for line_number, (line_start, line_end, line) in enumerate(_physical_lines(source), start=1):
         marker = _line_without_ending(line)
         if marker in positions:
-            positions[marker].append((offset, line_end))
-        offset = line_end
+            positions[marker].append((line_start, line_end, line_number))
 
     for marker in EDITABLE_REGION_MARKERS:
         count = len(positions[marker])
@@ -338,4 +355,6 @@ def parse_editable_regions(source: str) -> EditableRegions:
         fixed_middle=source[end_helpers[0] : begin_proof[1]],
         proof=source[begin_proof[1] : end_proof[0]],
         fixed_suffix=source[end_proof[0] :],
+        helper_line_bounds=(begin_helpers[2] + 1, end_helpers[2] - 1),
+        proof_line_bounds=(begin_proof[2] + 1, end_proof[2] - 1),
     )
