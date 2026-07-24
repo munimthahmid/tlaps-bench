@@ -356,9 +356,10 @@ def _run_backend_with_retries(
     (INFRA_ERROR + 0 output tokens). A genuine attempt (any output tokens) is
     never re-run.
 
-    Every attempt gets a fresh canonical snapshot: both the agent self-check
-    and grader read it, and in local mode the agent can write to the host path,
-    so a failed attempt's copy must never leak into a retry or the grader.
+    Every attempt gets a fresh canonical snapshot for agent self-checking. In
+    local mode the agent can write to that host path, so a failed attempt's copy
+    must never leak into a retry. Modes requiring canonical replay receive a
+    separate fresh snapshot for grading.
     With fixed_workspace=None each attempt also gets a fresh workspace (a
     failed first attempt's partial edits can't leak into a retry); a
     continuation round passes its existing workspace instead — the partial
@@ -766,6 +767,7 @@ def run_single_benchmark(item: WorkItem):
 
     workspace = None
     canonical_dir = None
+    grading_canonical_dir = None
     try:
         # Resolve dependencies ONCE — the EXTENDS-closure walk parses files and may
         # warn (e.g. a goal-bearing module reached via the closure), so a second
@@ -863,10 +865,29 @@ def run_single_benchmark(item: WorkItem):
 
         # Run grader
         check_result_path = os.path.join(grading_dir, "check.result")
+        grading_canonical_dir = canonical_dir
+        if getattr(mode, "canonical_replay_required", False):
+            grading_canonical_dir = _make_canonical_dir(name_no_ext, item.benchmark_path, basename, deps)
         if item.use_container:
-            _run_grader_container(item, workspace, basename, grading_dir, check_result_path, result, canonical_dir)
+            _run_grader_container(
+                item,
+                workspace,
+                basename,
+                grading_dir,
+                check_result_path,
+                result,
+                grading_canonical_dir,
+            )
         else:
-            _run_grader_local(item, workspace, basename, grading_dir, check_result_path, result, canonical_dir)
+            _run_grader_local(
+                item,
+                workspace,
+                basename,
+                grading_dir,
+                check_result_path,
+                result,
+                grading_canonical_dir,
+            )
 
         # Opt-in continuation rounds: a genuine non-PASS keeps its workspace and
         # the agent is asked to build on its own partial proof. The pass@1 fields
@@ -881,6 +902,8 @@ def run_single_benchmark(item: WorkItem):
     finally:
         if workspace:
             shutil.rmtree(workspace, ignore_errors=True)
+        if grading_canonical_dir and grading_canonical_dir != canonical_dir:
+            shutil.rmtree(grading_canonical_dir, ignore_errors=True)
         if canonical_dir:
             shutil.rmtree(canonical_dir, ignore_errors=True)
 
@@ -1003,6 +1026,7 @@ def _run_continuations(
             name_no_ext,
             fixed_workspace=workspace,
         )
+        grading_canonical_dir = None
         try:
             round_usage = run.usage.with_context(continuation_round=rnd)
             round_result["usage"] = round_usage.to_dict()
@@ -1033,16 +1057,38 @@ def _run_continuations(
             # never got to work on (quota cap or 0-token startup death).
             cut_short = run.quota_exhausted or run.infra_retriable
             if not cut_short:
+                grading_canonical_dir = run.canonical_dir
+                if getattr(mode, "canonical_replay_required", False):
+                    grading_canonical_dir = _make_canonical_dir(
+                        name_no_ext,
+                        item.benchmark_path,
+                        basename,
+                        deps,
+                    )
                 check_result_path = os.path.join(round_dir, "check.result")
                 if item.use_container:
                     _run_grader_container(
-                        item, workspace, basename, round_dir, check_result_path, round_result, run.canonical_dir
+                        item,
+                        workspace,
+                        basename,
+                        round_dir,
+                        check_result_path,
+                        round_result,
+                        grading_canonical_dir,
                     )
                 else:
                     _run_grader_local(
-                        item, workspace, basename, round_dir, check_result_path, round_result, run.canonical_dir
+                        item,
+                        workspace,
+                        basename,
+                        round_dir,
+                        check_result_path,
+                        round_result,
+                        grading_canonical_dir,
                     )
         finally:
+            if grading_canonical_dir and grading_canonical_dir != run.canonical_dir:
+                shutil.rmtree(grading_canonical_dir, ignore_errors=True)
             shutil.rmtree(run.canonical_dir, ignore_errors=True)
 
         rounds.append(round_result)
@@ -1099,8 +1145,8 @@ def _run_backend_container(
         image=item.container_image,
         workspace=workspace,
         result_dir=agent_dir,  # mount only agent/ subdir as /results
-        # Same canonical snapshot the grader reads, bind-mounted read-only so the
-        # agent's own check_proof_bin runs the identical cheat oracle the grader will.
+        # Canonical source snapshot for agent self-checking, bind-mounted read-only.
+        # Canonical-replay modes receive a separate fresh snapshot for grading.
         benchmark_dir=canonical_dir or "",
         read_only_files=[(path, f"/workspace/{os.path.basename(path)}") for path in (read_only_files or [])],
         env=backend_env,
@@ -1128,6 +1174,8 @@ def _run_backend_container(
         )
     if canonical_dir:
         config.env["TLAPS_BENCHMARK_DIR"] = "/benchmark"
+    if getattr(item.mode, "canonical_replay_required", False):
+        config.env["TLAPS_CANONICAL_REPLAY_REQUIRED"] = "1"
     # Self-check uses the SAME tlapm budget as the grader (item.check_timeout),
     # so a proof near the time boundary can't pass the agent's check yet time out
     # at grading.
@@ -1263,11 +1311,12 @@ def _run_backend_local(
     sany_run_sh = os.path.join(REPO_ROOT, "src", "dataset", "sany-dump", "run.sh")
     if os.path.isfile(sany_run_sh):
         agent_env["SANY_RUN_SH"] = sany_run_sh
-    # Point the agent's own check_proof_bin at the same canonical snapshot the
-    # grader reads, so its self-check is the identical cheat oracle (no host
-    # /benchmark mount exists, so the env var is how the checker discovers it).
+    # Point the agent's own check_proof_bin at canonical source bytes (no host
+    # /benchmark mount exists, so the env var is how the checker discovers them).
     if canonical_dir:
         agent_env["TLAPS_BENCHMARK_DIR"] = canonical_dir
+    if getattr(mode, "canonical_replay_required", False):
+        agent_env["TLAPS_CANONICAL_REPLAY_REQUIRED"] = "1"
     # Same tlapm budget the grader uses, so the discharge verdict matches.
     agent_env["TLAPS_CHECK_TIMEOUT"] = str(item.check_timeout)
 
@@ -1378,8 +1427,8 @@ def _run_grader_container(
         image=item.container_image,
         workspace=workspace,
         result_dir=grading_dir,
-        # The same canonical snapshot the agent self-checked against (exactly
-        # {target}.tla + deps), NOT the whole module dir.
+        # Exactly {target}.tla + canonical deps. Replay-required modes pass a
+        # grader-only fresh snapshot, never the one exposed to the agent.
         benchmark_dir=canonical_dir or os.path.dirname(item.benchmark_path),
     )
     config.env["GIT_CONFIG_COUNT"] = "1"
@@ -1419,8 +1468,8 @@ def _run_grader_local(
         basename,
         check_result_path,
         item.check_timeout,
-        # The same canonical snapshot the agent self-checked against (exactly
-        # {target}.tla + deps), NOT the whole module dir.
+        # Exactly {target}.tla + canonical deps. Replay-required modes pass a
+        # grader-only fresh snapshot, never the one exposed to the agent.
         benchmark_dir=canonical_dir or os.path.dirname(item.benchmark_path),
     )
     try:

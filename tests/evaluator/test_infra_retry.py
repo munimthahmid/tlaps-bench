@@ -545,6 +545,30 @@ def test_retry_runs_on_fresh_canonical_snapshot(tmp_path, monkeypatch):
     assert seen == [BENCH_TEXT, BENCH_TEXT, BENCH_TEXT]
 
 
+def test_canonical_replay_uses_fresh_snapshot_not_exposed_to_agent(tmp_path, monkeypatch):
+    seen = []
+
+    def taint(canonical_dir):
+        path = os.path.join(canonical_dir, "Bar.tla")
+        with open(path, "w") as f:
+            f.write("TAINTED")
+
+    def inspect(canonical_dir):
+        with open(os.path.join(canonical_dir, "Bar.tla")) as f:
+            seen.append(f.read())
+
+    backend = _ScriptedBackend()
+    item = _work_item(tmp_path, backend)
+    item.mode.canonical_replay_required = True
+    agent = _install_agent(monkeypatch, backend, [dict(GENUINE_FAIL, mutate_canonical=taint)])
+    grader = _install_grader(monkeypatch, inspect_canonical=inspect)
+
+    runner.run_single_benchmark(item)
+
+    assert grader["canonical_dirs"][0] != agent["canonical_dirs"][0]
+    assert seen == [BENCH_TEXT]
+
+
 def test_quota_exhaustion_is_not_infra_retried(tmp_path, monkeypatch):
     # Quota owns its own retry budget: once it reports exhaustion the infra loop
     # must stop dead — no reclassification, no extra attempts.

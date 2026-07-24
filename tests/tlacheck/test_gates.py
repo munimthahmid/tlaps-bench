@@ -22,12 +22,14 @@ CLEAN = GraderInputs(
     extra_axiom=False,
     smuggled_module=False,
     preamble_modified=False,
+    scaffold_modified=False,
     tlapm_obligations_proved=True,
     n_missing=0,
     admitted_goal=False,
     proof_omitted=False,
     admitted_extra=False,
     deps_modified=False,
+    canonical_replay_required=True,
     graded_on_canonical=True,
 )
 
@@ -46,10 +48,12 @@ def test_each_wired_failure_fails_the_run():
         ("extra_axiom", Gate.A_IDENTITY, True),
         ("smuggled_module", Gate.A_IDENTITY, True),
         ("preamble_modified", Gate.A_IDENTITY, True),
+        ("scaffold_modified", Gate.A_IDENTITY, True),
         ("tlapm_obligations_proved", Gate.B_DISCHARGE, False),
         ("admitted_goal", Gate.B_DISCHARGE, True),
         ("proof_omitted", Gate.B_DISCHARGE, True),
         ("deps_modified", Gate.C_TRUST, True),
+        ("graded_on_canonical", Gate.C_TRUST, False),
     ]
     for field_name, gate, bad_value in cases:
         inp = GraderInputs(**{**CLEAN.__dict__, field_name: bad_value})
@@ -117,6 +121,22 @@ def test_from_tlacheck_clean_result_passes():
         _result(), tlapm_obligations_proved=True, n_missing=0, sany_valid=True, graded_on_canonical=True
     )
     assert grade(inp).passed
+
+
+def test_required_canonical_replay_fails_when_not_performed():
+    inp = from_tlacheck(
+        _result(),
+        tlapm_obligations_proved=True,
+        n_missing=0,
+        sany_valid=True,
+        canonical_replay_required=True,
+        graded_on_canonical=False,
+    )
+
+    result = grade(inp)
+
+    assert not result.passed
+    assert result.failed_integrity_checks() == ["graded_on_canonical"]
 
 
 def test_from_tlacheck_ignores_warnings():

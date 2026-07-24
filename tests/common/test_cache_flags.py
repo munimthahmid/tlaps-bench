@@ -7,6 +7,8 @@ import pytest
 
 from common import check_proof
 from evaluator.modes import get_mode, list_modes
+from evaluator.modes.proof_completion import ProofCompletion
+from evaluator.modes.proof_from_scratch import ProofFromScratch
 
 NO_CACHE_FLAG = "--no-cache"
 
@@ -25,6 +27,14 @@ def test_grader_command_always_passes_no_cache(mode_name, tmp_path):
     mode = get_mode(mode_name, str(tmp_path), "/usr/local/bin/check_proof_bin")
     cmd = mode.checker_command("/ws", "Foo.tla", "/out/check.result", 600)
     assert NO_CACHE_FLAG in cmd, f"grader command for {mode_name} would reuse the agent's cache"
+
+
+def test_only_proof_from_scratch_grader_requires_canonical_replay(tmp_path):
+    scratch = ProofFromScratch(str(tmp_path), "/checker")
+    completion = ProofCompletion(str(tmp_path), "/checker")
+
+    assert "--canonical-replay-required" in scratch.checker_command("/ws", "Foo.tla", "/out", 600)
+    assert "--canonical-replay-required" not in completion.checker_command("/ws", "Foo.tla", "/out", 600)
 
 
 def _src(rel):

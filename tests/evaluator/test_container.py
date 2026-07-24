@@ -551,7 +551,15 @@ class TestRunAgentContainerSessionWiring:
         assert captured["config"].env["COPILOT_OTEL_EXPORTER_TYPE"] == "file"
         assert captured["config"].env["COPILOT_OTEL_FILE_EXPORTER_PATH"] == "/results/copilot-otel.jsonl"
 
-    def _capture_config(self, tmp_path, *, keep_container=False, session_dir="", read_only_files=None):
+    def _capture_config(
+        self,
+        tmp_path,
+        *,
+        keep_container=False,
+        session_dir="",
+        read_only_files=None,
+        canonical_replay_required=False,
+    ):
         from evaluator import runner as runner_mod
 
         backend = CopilotBackend()
@@ -562,6 +570,7 @@ class TestRunAgentContainerSessionWiring:
             keep_container=keep_container,
             session_dir=session_dir,
             container_image="tlaps-bench-base:immutable",
+            mode=MagicMock(canonical_replay_required=canonical_replay_required),
         )
         captured = {}
 
@@ -625,6 +634,11 @@ class TestRunAgentContainerSessionWiring:
             (str(workspace / "Model.tla"), "/workspace/Model.tla"),
             (str(workspace / "Defs.tla"), "/workspace/Defs.tla"),
         ]
+
+    def test_required_canonical_replay_is_propagated_to_agent_self_check(self, tmp_path):
+        config = self._capture_config(tmp_path, canonical_replay_required=True)
+
+        assert config.env["TLAPS_CANONICAL_REPLAY_REQUIRED"] == "1"
 
 
 class TestResolveSessionDir:

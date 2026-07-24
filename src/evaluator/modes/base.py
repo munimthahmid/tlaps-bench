@@ -47,6 +47,7 @@ class Mode(ABC):  # noqa: B024 - ABC used as a non-instantiable base marker; sub
     name: str = ""
     description: str = ""
     read_only_dependencies: bool = False
+    canonical_replay_required: bool = False
 
     def __init__(self, benchmark_root: str, checker_binary: str):
         """
@@ -252,4 +253,6 @@ class Mode(ABC):  # noqa: B024 - ABC used as a non-instantiable base marker; sub
         # back to git-root reconstruction inside its workspace).
         if benchmark_dir:
             cmd += ["--benchmark-dir", benchmark_dir]
+        if self.canonical_replay_required:
+            cmd.append("--canonical-replay-required")
         return cmd
