@@ -1131,6 +1131,24 @@ def _litellm_max_tokens(litellm: object, model: str) -> int:
     return 32_768
 
 
+def _litellm_response_cost(litellm: object, response: object) -> tuple[float, str] | None:
+    """Return LiteLLM's own USD cost for one response, without a local price table."""
+
+    hidden = _get(response, "_hidden_params")
+    if isinstance(hidden, dict):
+        cost = _optional_nonnegative_float(hidden.get("response_cost"))
+        if cost is not None:
+            return cost, "litellm.response_cost"
+    completion_cost = getattr(litellm, "completion_cost", None)
+    if not callable(completion_cost):
+        return None
+    try:
+        cost = _optional_nonnegative_float(completion_cost(completion_response=response))
+    except Exception:
+        return None
+    return (cost, "litellm.completion_cost") if cost is not None else None
+
+
 def _litellm_audit(
     prompt: str,
     model: str,
@@ -1208,9 +1226,23 @@ def run_litellm(prompt: str, model: str, reasoning_effort: str | None = None) ->
         optional_values: dict[str, object | None] = {
             "input_tokens": request_input,
             "output_tokens": request_output,
+            "cache_read_input_tokens": _optional_nonnegative_int(
+                _get(_get(usage, "prompt_tokens_details"), "cached_tokens")
+            ),
+            "cache_write_input_tokens": _optional_nonnegative_int(
+                _get(_get(usage, "prompt_tokens_details"), "cache_creation_tokens")
+            ),
+            "reasoning_output_tokens": _optional_nonnegative_int(
+                _get(_get(usage, "completion_tokens_details"), "reasoning_tokens")
+            ),
             "model": _enum_value(_get(response, "model")),
+            "request_id": _enum_value(_get(response, "id")),
         }
         detail.update({key: value for key, value in optional_values.items() if value is not None})
+        cost_evidence = _litellm_response_cost(litellm, response)
+        if cost_evidence is not None:
+            response_cost, cost_source = cost_evidence
+            detail["costs"] = [{"amount": response_cost, "unit": "usd", "source": cost_source}]
         usage_details = (detail,)
         text = _response_text(response)
         finish_reason = _response_finish_reason(response)
@@ -1963,7 +1995,7 @@ def main(argv: list[str] | None = None) -> int:
             usage_complete = _usage_details_complete(
                 usage_details,
                 model_requests,
-                require_cost=args.provider == "copilot",
+                require_cost=args.provider in {"copilot", "litellm"},
             )
             _emit_usage_events(
                 provider=args.provider,
@@ -2000,7 +2032,7 @@ def main(argv: list[str] | None = None) -> int:
             result.output_tokens,
             result.usage_details,
             model_requests,
-            require_cost=args.provider == "copilot",
+            require_cost=args.provider in {"copilot", "litellm"},
         )
         _emit_usage_events(
             provider=args.provider,
