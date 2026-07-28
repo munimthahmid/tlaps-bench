@@ -544,11 +544,21 @@ def check_editable_region_integrity(filepath, benchmark_dir):
         return [(0, f"editable-region markers were modified: {exc}", "SCAFFOLD_MODIFIED")]
 
     if submitted_regions.fixed_segments != canonical_regions.fixed_segments:
+        canonical_prefix, canonical_middle, canonical_suffix = canonical_regions.fixed_segments
+        submitted_prefix, submitted_middle, submitted_suffix = submitted_regions.fixed_segments
+        extra_suffix = (
+            submitted_suffix[len(canonical_suffix) :] if submitted_suffix.startswith(canonical_suffix) else None
+        )
+        if (
+            (submitted_prefix, submitted_middle) == (canonical_prefix, canonical_middle)
+            and extra_suffix
+            and not extra_suffix.strip("\r\n")
+        ):
+            return []
 
         def normalize_format(regions):
             prefix, middle, suffix = (re.sub(r"\r\n|\r|\n", "\n", segment) for segment in regions.fixed_segments)
-            if suffix.endswith("\n"):
-                suffix = suffix[:-1]
+            suffix = suffix.rstrip("\n")
             return prefix, middle, suffix
 
         if normalize_format(submitted_regions) == normalize_format(canonical_regions):
