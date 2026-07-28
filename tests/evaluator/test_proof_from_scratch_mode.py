@@ -7,7 +7,13 @@ import pickle
 
 import pytest
 
-from common.proof_from_scratch_contract import ManifestError
+from common.proof_from_scratch_contract import (
+    BEGIN_AGENT_HELPERS,
+    BEGIN_AGENT_PROOF,
+    END_AGENT_HELPERS,
+    END_AGENT_PROOF,
+    ManifestError,
+)
 from evaluator.modes.proof_completion import ProofCompletion
 from evaluator.modes.proof_from_scratch import ProofFromScratch
 
@@ -17,6 +23,19 @@ def _write_module(suite, relative_path, body=""):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"---- MODULE {path.stem} ----\n{body}====\n", encoding="utf-8")
     return path.resolve()
+
+
+def _write_task(suite, relative_path, body=""):
+    marked_body = (
+        f"{body}"
+        f"{BEGIN_AGENT_HELPERS}\n"
+        f"{END_AGENT_HELPERS}\n"
+        "THEOREM Target == TRUE\n"
+        f"{BEGIN_AGENT_PROOF}\n"
+        "PROOF OBVIOUS\n"
+        f"{END_AGENT_PROOF}\n"
+    )
+    return _write_module(suite, relative_path, marked_body)
 
 
 def _write_manifest(suite, manifest):
@@ -35,8 +54,8 @@ def test_only_proof_from_scratch_requires_read_only_dependencies():
 
 def test_discovers_only_sorted_manifest_tasks(tmp_path):
     suite = tmp_path / "proof-from-scratch"
-    target_z = _write_module(suite, "Zed/Zed_Target.tla", "THEOREM Target == TRUE\n")
-    target_a = _write_module(suite, "Alpha/Alpha_Target.tla", "THEOREM Target == TRUE\n")
+    target_z = _write_task(suite, "Zed/Zed_Target.tla")
+    target_a = _write_task(suite, "Alpha/Alpha_Target.tla")
     _write_module(suite, "Alpha/Undeclared_Theorem.tla", "THEOREM Leaked == TRUE\n")
     _write_manifest(
         suite,
@@ -55,9 +74,9 @@ def test_discovers_only_sorted_manifest_tasks(tmp_path):
 
 def test_filters_manifest_tasks_with_existing_comma_separated_substrings(tmp_path):
     suite = tmp_path / "proof-from-scratch"
-    target_a = _write_module(suite, "Alpha/Alpha_Target.tla")
-    target_b = _write_module(suite, "Beta/Beta_Target.tla")
-    target_c = _write_module(suite, "Gamma/Gamma_Target.tla")
+    target_a = _write_task(suite, "Alpha/Alpha_Target.tla")
+    target_b = _write_task(suite, "Beta/Beta_Target.tla")
+    target_c = _write_task(suite, "Gamma/Gamma_Target.tla")
     _write_manifest(
         suite,
         {
@@ -76,7 +95,7 @@ def test_filters_manifest_tasks_with_existing_comma_separated_substrings(tmp_pat
 
 def test_returns_only_manifest_context_in_declared_order(tmp_path):
     suite = tmp_path / "proof-from-scratch"
-    target = _write_module(suite, "Example/Example_Target.tla")
+    target = _write_task(suite, "Example/Example_Target.tla")
     context_b = _write_module(suite, "Context/ModelB.tla")
     context_a = _write_module(suite, "Context/ModelA.tla")
     _write_module(suite, "Example/UnrelatedDefs.tla")
@@ -94,7 +113,7 @@ def test_returns_only_manifest_context_in_declared_order(tmp_path):
 
 def test_rejects_dependency_lookup_for_undeclared_file(tmp_path):
     suite = tmp_path / "proof-from-scratch"
-    _write_module(suite, "Example/Example_Target.tla")
+    _write_task(suite, "Example/Example_Target.tla")
     undeclared = _write_module(suite, "Example/Other_Target.tla")
     _write_manifest(suite, {"Example/Example_Target.tla": {"context": []}})
 
@@ -111,7 +130,7 @@ def test_missing_manifest_fails_closed_during_discovery(tmp_path):
 
 def test_mode_remains_pickleable_after_manifest_discovery(tmp_path):
     suite = tmp_path / "proof-from-scratch"
-    target = _write_module(suite, "Example/Example_Target.tla")
+    target = _write_task(suite, "Example/Example_Target.tla")
     context = _write_module(suite, "Context/Model.tla")
     _write_manifest(
         suite,

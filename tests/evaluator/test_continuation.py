@@ -103,8 +103,9 @@ def _work_item(tmp_path, backend, max_continuations=0, infra_retries=0):
 def _install_agent(monkeypatch, backend, calls_spec):
     """Patch _run_backend_local with a scripted agent: one spec dict per call
     ({"exit": int, "events": [...], "stderr": str, "out_tokens": int,
-    "mutate": fn(workspace), "mutate_canonical": fn(canonical_dir)}), recording
-    workspace/prompt/canonical per call."""
+    "mutate": fn(workspace), "mutate_canonical": fn(canonical_dir),
+    "mutate_source": fn(benchmark_path)}), recording workspace/prompt/canonical
+    per call."""
     calls = {"n": 0, "workspaces": [], "prompts": [], "agent_dirs": [], "canonical_dirs": []}
 
     def fake_run(
@@ -130,6 +131,8 @@ def _install_agent(monkeypatch, backend, calls_spec):
             spec["mutate"](workspace)
         if "mutate_canonical" in spec:
             spec["mutate_canonical"](canonical_dir)
+        if "mutate_source" in spec:
+            spec["mutate_source"](item.benchmark_path)
 
     monkeypatch.setattr(runner, "_run_backend_local", fake_run)
     return calls
@@ -137,13 +140,15 @@ def _install_agent(monkeypatch, backend, calls_spec):
 
 def _install_grader(monkeypatch, verdicts):
     """Patch _run_grader_local with one scripted verdict per grading call."""
-    calls = {"n": 0, "grading_dirs": [], "canonical_dirs": []}
+    calls = {"n": 0, "grading_dirs": [], "canonical_dirs": [], "canonical_texts": []}
 
     def fake_grader(item, workspace, basename, grading_dir, check_result_path, result, canonical_dir=None):
         result["check_verdict"] = verdicts[calls["n"]]
         calls["n"] += 1
         calls["grading_dirs"].append(grading_dir)
         calls["canonical_dirs"].append(canonical_dir)
+        with open(os.path.join(canonical_dir, basename)) as stream:
+            calls["canonical_texts"].append(stream.read())
 
     monkeypatch.setattr(runner, "_run_grader_local", fake_grader)
     return calls
@@ -204,13 +209,20 @@ def test_each_continuation_grade_uses_fresh_unexposed_canonical_snapshot(tmp_pat
         with open(os.path.join(canonical_dir, "Bar.tla"), "w") as f:
             f.write("TAINTED")
 
+    def taint_source(benchmark_path):
+        with open(benchmark_path, "w") as f:
+            f.write("TAINTED SOURCE")
+
     backend = _ScriptedBackend()
     item = _work_item(tmp_path, backend, max_continuations=1)
     item.mode.canonical_replay_required = True
     agent = _install_agent(
         monkeypatch,
         backend,
-        [dict(GENUINE, mutate_canonical=taint), dict(GENUINE, mutate_canonical=taint)],
+        [
+            dict(GENUINE, mutate_canonical=taint, mutate_source=taint_source),
+            dict(GENUINE, mutate_canonical=taint, mutate_source=taint_source),
+        ],
     )
     grader = _install_grader(monkeypatch, ["FAIL", "FAIL"])
 
@@ -221,6 +233,7 @@ def test_each_continuation_grade_uses_fresh_unexposed_canonical_snapshot(tmp_pat
         agent_dir != grader_dir
         for agent_dir, grader_dir in zip(agent["canonical_dirs"], grader["canonical_dirs"], strict=True)
     )
+    assert grader["canonical_texts"] == [BENCH_TEXT, BENCH_TEXT]
 
 
 def test_stops_at_continuation_budget(tmp_path, monkeypatch):

@@ -27,6 +27,19 @@ def _write_module(root, relative_path, *, declared_name=None, body=""):
     return path.resolve()
 
 
+def _write_task(root, relative_path, *, declared_name=None, body=""):
+    marked_body = (
+        f"{body}"
+        f"{BEGIN_AGENT_HELPERS}\n"
+        f"{END_AGENT_HELPERS}\n"
+        "THEOREM Target == TRUE\n"
+        f"{BEGIN_AGENT_PROOF}\n"
+        "PROOF OBVIOUS\n"
+        f"{END_AGENT_PROOF}\n"
+    )
+    return _write_module(root, relative_path, declared_name=declared_name, body=marked_body)
+
+
 def _write_manifest(root, value):
     root.mkdir(parents=True, exist_ok=True)
     (root / "manifest.json").write_text(json.dumps(value), encoding="utf-8")
@@ -54,8 +67,8 @@ def _canonical_source(newline="\n"):
 
 def test_loads_sorted_immutable_boundaries_and_preserves_context_order(tmp_path):
     suite = tmp_path / "proof-from-scratch"
-    target_z = _write_module(suite, "Zed/Zed_Target.tla")
-    target_a = _write_module(suite, "Alpha/Alpha_Target.tla")
+    target_z = _write_task(suite, "Zed/Zed_Target.tla")
+    target_a = _write_task(suite, "Alpha/Alpha_Target.tla")
     context_z = _write_module(suite, "Shared/ZContext.tla")
     context_a = _write_module(suite, "Shared/AContext.tla")
     _write_manifest(
@@ -269,6 +282,48 @@ def test_every_file_must_have_a_module_header(tmp_path):
 
     with pytest.raises(ManifestError, match="has no module header"):
         load_proof_from_scratch_manifest(suite)
+
+
+def test_task_must_have_valid_editable_regions(tmp_path):
+    suite = tmp_path / "proof-from-scratch"
+    _write_module(suite, "Task.tla", body="THEOREM Target == TRUE\nPROOF OBVIOUS\n")
+    _write_manifest(suite, {"Task.tla": {"context": []}})
+
+    with pytest.raises(ManifestError, match="Task.tla.*invalid editable regions"):
+        load_proof_from_scratch_manifest(suite)
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "EXTENDS Missing\n",
+        "Alias == INSTANCE Missing\n",
+    ],
+)
+def test_manifest_context_must_cover_transitive_module_references(tmp_path, reference):
+    suite = tmp_path / "proof-from-scratch"
+    _write_task(suite, "Task.tla", body="EXTENDS Model\n")
+    _write_module(suite, "Model.tla", body=reference)
+    _write_module(suite, "Missing.tla")
+    _write_manifest(suite, {"Task.tla": {"context": ["Model.tla"]}})
+
+    with pytest.raises(ManifestError, match="incomplete context.*Missing"):
+        load_proof_from_scratch_manifest(suite)
+
+
+def test_manifest_closure_allows_trusted_libraries_and_ignores_non_code_references(tmp_path):
+    suite = tmp_path / "proof-from-scratch"
+    _write_task(suite, "Task.tla", body="EXTENDS Model, Integers\n")
+    _write_module(
+        suite,
+        "Model.tla",
+        body=('Description == "INSTANCE StringOnly"\n\\* EXTENDS LineCommentOnly\n(* INSTANCE BlockCommentOnly *)\n'),
+    )
+    _write_manifest(suite, {"Task.tla": {"context": ["Model.tla"]}})
+
+    boundaries = load_proof_from_scratch_manifest(suite)
+
+    assert list(boundaries) == ["Task.tla"]
 
 
 def test_parse_editable_regions_preserves_fixed_and_editable_bytes():

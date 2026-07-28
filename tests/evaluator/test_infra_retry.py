@@ -298,13 +298,14 @@ def test_make_workspace_cleans_up_on_setup_failure(tmp_path, monkeypatch):
         created.append(d)
         return d
 
-    def broken_copy2(*a, **kw):
+    def broken_write(*a, **kw):
         raise OSError("disk full")
 
     monkeypatch.setattr(runner.tempfile, "mkdtemp", tracking_mkdtemp)
-    monkeypatch.setattr(runner.shutil, "copy2", broken_copy2)
+    monkeypatch.setattr(runner, "_write_bytes", broken_write)
+    canonical_inputs = runner.CanonicalInputs("Bar.tla", BENCH_TEXT.encode(), ())
     with pytest.raises(OSError):
-        runner._make_workspace("copilot", "Bar", str(tmp_path / "Bar.tla"), "Bar.tla", [])
+        runner._make_workspace("copilot", "Bar", canonical_inputs)
     assert created and not os.path.isdir(created[0])
 
 
@@ -315,14 +316,8 @@ def test_make_workspace_can_make_only_dependencies_read_only(tmp_path):
     benchmark.chmod(0o444)
     dependency.write_text("---- MODULE Model ----\n====\n")
 
-    workspace = runner._make_workspace(
-        "copilot",
-        "Bar",
-        str(benchmark),
-        benchmark.name,
-        [str(dependency)],
-        read_only_dependencies=True,
-    )
+    canonical_inputs = runner.CanonicalInputs.capture(str(benchmark), benchmark.name, [str(dependency)])
+    workspace = runner._make_workspace("copilot", "Bar", canonical_inputs, read_only_dependencies=True)
     try:
         assert os.stat(os.path.join(workspace, benchmark.name)).st_mode & 0o200
         assert os.stat(os.path.join(workspace, dependency.name)).st_mode & 0o777 == 0o444

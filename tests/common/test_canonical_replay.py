@@ -122,6 +122,31 @@ def test_fixed_scaffold_change_is_rejected(tmp_path):
     assert issues == [(0, "fixed task scaffold outside editable regions was modified", "SCAFFOLD_MODIFIED")]
 
 
+@pytest.mark.parametrize(
+    "submitted",
+    [
+        _task().replace("\n", "\r\n"),
+        _task().removesuffix("\n"),
+    ],
+)
+def test_newline_only_scaffold_change_is_a_non_cheat_boundary_failure(tmp_path, submitted):
+    canonical = tmp_path / "canonical"
+    canonical.mkdir()
+    target = tmp_path / "Task.tla"
+    (canonical / "Task.tla").write_bytes(_task().encode())
+    target.write_bytes(submitted.encode())
+
+    issues = check_proof.check_editable_region_integrity(str(target), str(canonical))
+
+    assert issues == [
+        (
+            0,
+            "fixed task scaffold differs only in line endings or the final newline",
+            "SCAFFOLD_FORMAT_MODIFIED",
+        )
+    ]
+
+
 def test_marker_change_is_rejected(tmp_path):
     canonical = tmp_path / "canonical"
     canonical.mkdir()
@@ -199,6 +224,55 @@ def test_fixed_scaffold_failure_stops_before_tlapm(tmp_path, monkeypatch):
 
     assert exc_info.value.code == 1
     assert "fixed task scaffold outside editable regions was modified" in output.read_text()
+
+
+def test_newline_only_scaffold_failure_is_not_reported_as_cheating(tmp_path, monkeypatch):
+    canonical = tmp_path / "canonical"
+    workspace = tmp_path / "workspace"
+    canonical.mkdir()
+    workspace.mkdir()
+    (canonical / "Task.tla").write_bytes(_task().encode())
+    (canonical / "Model.tla").write_text("---- MODULE Model ----\n====\n")
+    target = workspace / "Task.tla"
+    target.write_bytes(_task().replace("\n", "\r\n").encode())
+    (workspace / "Model.tla").write_text("---- MODULE Model ----\n====\n")
+    output = tmp_path / "check.result"
+
+    monkeypatch.setattr(check_proof, "check_sany_valid", lambda _path: ("valid", ""))
+    monkeypatch.setattr(
+        check_proof,
+        "run_killgroup",
+        lambda *_args, **_kwargs: pytest.fail("boundary failure must stop before TLAPM"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_proof",
+            str(target),
+            "--mode",
+            "proof-from-scratch",
+            "--no-container",
+            "--no-git-track",
+            "--canonical-replay-required",
+            "--benchmark-dir",
+            str(canonical),
+            "--tlapm",
+            "/bin/true",
+            "--tlapm-lib",
+            str(tmp_path),
+            "--output",
+            str(output),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_proof.main()
+
+    result = output.read_text()
+    assert exc_info.value.code == 1
+    assert "scaffold_format_unchanged" in result
+    assert "CHEAT-DETECTED" not in result
 
 
 def test_required_canonical_sany_failure_is_infrastructure_error(tmp_path, monkeypatch):

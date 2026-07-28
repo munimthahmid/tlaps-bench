@@ -20,29 +20,18 @@ import re
 import sys
 from abc import ABC
 
+from common.tla_modules import referenced_modules as _referenced_modules
+
 # A top-level proof goal — `THEOREM`/`LEMMA`/`COROLLARY`/`PROPOSITION` at the
 # start of a logical line (optionally named). This is what makes a file a
 # benchmark to be proved, as opposed to a shared model / dependency layer.
 _TOP_LEVEL_GOAL = re.compile(r"^[ \t]*(THEOREM|LEMMA|COROLLARY|PROPOSITION)\b", re.MULTILINE)
 
+
 # Module references that a .tla file depends on to even parse: its `EXTENDS`
 # clause (a single comma-separated list, possibly wrapping across lines — `\s`
 # spans newlines) and any `INSTANCE` of a module. A stray match inside a comment
 # is harmless: it is only ever looked up against actual sibling files.
-_EXTENDS_RE = re.compile(r"\bEXTENDS\b\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)")
-_INSTANCE_RE = re.compile(r"\bINSTANCE\s+([A-Za-z_]\w*)")
-
-
-def _referenced_modules(text: str) -> set[str]:
-    """Module names this source references via EXTENDS / INSTANCE."""
-    names: set[str] = set()
-    for m in _EXTENDS_RE.finditer(text):
-        names.update(n.strip() for n in m.group(1).split(","))
-    for m in _INSTANCE_RE.finditer(text):
-        names.add(m.group(1))
-    return names
-
-
 class Mode(ABC):  # noqa: B024 - ABC used as a non-instantiable base marker; subclasses set class attrs
     name: str = ""
     description: str = ""

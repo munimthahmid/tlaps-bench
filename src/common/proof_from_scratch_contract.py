@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any
 
+from common.tla_modules import RESOLVABLE_MODULES, referenced_modules
+
 MANIFEST_FILENAME = "manifest.json"
 
 BEGIN_AGENT_HELPERS = r"\* BEGIN AGENT HELPERS"
@@ -176,22 +178,27 @@ def _resolve_suite_file(root: Path, relative_path: PurePosixPath, *, label: str)
     return resolved
 
 
-def _declared_module_name(path: Path) -> str:
+def _read_module_source(path: Path) -> str:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        return path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise ManifestError(f"cannot read TLA+ module {path}: {exc}") from exc
 
-    for line in lines:
+
+def _declared_module_name(path: Path, source: str) -> str:
+    for line in source.splitlines():
         match = _MODULE_HEADER.fullmatch(line)
         if match:
             return match.group(1)
     raise ManifestError(f"TLA+ file has no module header: {path}")
 
 
-def _validate_module_files(task_key: str, files: tuple[tuple[str, Path], ...]) -> None:
+def _validate_module_files(
+    task_key: str,
+    files: tuple[tuple[str, Path], ...],
+) -> dict[str, tuple[str, Path, str]]:
     basenames: dict[str, tuple[str, Path]] = {}
-    module_names: dict[str, tuple[str, Path]] = {}
+    modules: dict[str, tuple[str, Path, str]] = {}
 
     for declared_path, resolved_path in files:
         relative_path = PurePosixPath(declared_path)
@@ -204,20 +211,45 @@ def _validate_module_files(task_key: str, files: tuple[tuple[str, Path], ...]) -
             )
         basenames[relative_path.name] = (declared_path, resolved_path)
 
-        module_name = _declared_module_name(resolved_path)
+        source = _read_module_source(resolved_path)
+        module_name = _declared_module_name(resolved_path, source)
         if relative_path.stem != module_name:
             raise ManifestError(
                 f"TLA+ filename/module mismatch for manifest path {declared_path!r}: "
                 f"filename {relative_path.stem!r}, header {module_name!r} in {resolved_path}"
             )
-        previous_module = module_names.get(module_name)
+        previous_module = modules.get(module_name)
         if previous_module is not None:
-            previous_declared, previous_resolved = previous_module
+            previous_declared, previous_resolved, _ = previous_module
             raise ManifestError(
                 f"task {task_key!r} has duplicate module name {module_name!r}: "
                 f"{previous_declared} ({previous_resolved}) and {declared_path} ({resolved_path})"
             )
-        module_names[module_name] = (declared_path, resolved_path)
+        modules[module_name] = (declared_path, resolved_path, source)
+
+    return modules
+
+
+def _validate_task_contract(
+    task_key: str,
+    modules: Mapping[str, tuple[str, Path, str]],
+) -> None:
+    task_name = PurePosixPath(task_key).stem
+    task_source = modules[task_name][2]
+    try:
+        parse_editable_regions(task_source)
+    except EditableRegionError as exc:
+        raise ManifestError(f"manifest task {task_key!r} has invalid editable regions: {exc}") from exc
+
+    declared_modules = set(modules)
+    for module_name, (declared_path, _resolved_path, source) in modules.items():
+        missing = referenced_modules(source) - declared_modules - RESOLVABLE_MODULES
+        if missing:
+            missing_names = ", ".join(repr(name) for name in sorted(missing))
+            raise ManifestError(
+                f"manifest task {task_key!r} has incomplete context: module {module_name!r} "
+                f"from {declared_path!r} references undeclared module(s) {missing_names}"
+            )
 
 
 def load_proof_from_scratch_manifest(suite_root: Path) -> Mapping[str, TaskBoundary]:
@@ -295,7 +327,8 @@ def load_proof_from_scratch_manifest(suite_root: Path) -> Mapping[str, TaskBound
             context_paths.append(context_path)
 
         resolved_paths = tuple(context_paths)
-        _validate_module_files(task_key, ((task_key, task_path), *context_entries))
+        modules = _validate_module_files(task_key, ((task_key, task_path), *context_entries))
+        _validate_task_contract(task_key, modules)
         boundaries[task_key] = TaskBoundary(
             task_key=task_key,
             task_path=task_path,

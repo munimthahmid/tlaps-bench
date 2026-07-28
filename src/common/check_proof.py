@@ -544,6 +544,21 @@ def check_editable_region_integrity(filepath, benchmark_dir):
         return [(0, f"editable-region markers were modified: {exc}", "SCAFFOLD_MODIFIED")]
 
     if submitted_regions.fixed_segments != canonical_regions.fixed_segments:
+
+        def normalize_format(regions):
+            prefix, middle, suffix = (re.sub(r"\r\n|\r|\n", "\n", segment) for segment in regions.fixed_segments)
+            if suffix.endswith("\n"):
+                suffix = suffix[:-1]
+            return prefix, middle, suffix
+
+        if normalize_format(submitted_regions) == normalize_format(canonical_regions):
+            return [
+                (
+                    0,
+                    "fixed task scaffold differs only in line endings or the final newline",
+                    "SCAFFOLD_FORMAT_MODIFIED",
+                )
+            ]
         return [(0, "fixed task scaffold outside editable regions was modified", "SCAFFOLD_MODIFIED")]
     return []
 
@@ -1201,6 +1216,7 @@ def main():
                 emit(f"ERROR: {exc}")
                 write_result_and_exit(3)
             cheating_issues.extend(boundary_issues)
+        boundary_kinds = {issue[2] for issue in boundary_issues}
         real_issues = [i for i in cheating_issues if not i[1].startswith("WARNING:")]
         warnings = [i for i in cheating_issues if i[1].startswith("WARNING:")]
         legacy_vectors = legacy_gate_vectors(real_issues)
@@ -1421,7 +1437,8 @@ def main():
                 sany_valid=(sany_status != "invalid"),
                 preamble_modified=legacy_preamble_modified,
                 proof_omitted=legacy_proof_omitted,
-                scaffold_modified=bool(boundary_issues),
+                scaffold_modified="SCAFFOLD_MODIFIED" in boundary_kinds,
+                scaffold_format_modified="SCAFFOLD_FORMAT_MODIFIED" in boundary_kinds,
                 legacy_issue_vectors=legacy_vectors,
             )
         )

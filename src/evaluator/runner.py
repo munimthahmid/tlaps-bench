@@ -42,6 +42,7 @@ from common.container import (
     ensure_image,
     forward_env,
 )
+from common.proof_from_scratch_contract import ProofFromScratchContractError
 from evaluator import quota
 from evaluator.backends import get_backend, list_backends
 from evaluator.backends.base import Backend, SubmissionDisposition
@@ -268,14 +269,69 @@ class WorkItem:
     keep_container: bool = False
     # Debugging: persistent host dir for agent session state ("" = off).
     session_dir: str = ""
+    # Replay-required modes capture every task before the worker pool starts.
+    canonical_inputs: "CanonicalInputs | None" = None
 
 
-def _make_canonical_dir(name_no_ext: str, benchmark_path: str, basename: str, deps: list[str]) -> str:
+@dataclass(frozen=True)
+class CanonicalInputs:
+    """Task and dependency bytes captured before an agent process can mutate them."""
+
+    target_name: str
+    target_bytes: bytes
+    dependencies: tuple[tuple[str, bytes], ...]
+
+    @classmethod
+    def capture(cls, benchmark_path: str, basename: str, deps: list[str]) -> "CanonicalInputs":
+        dependencies = tuple((os.path.basename(path), _read_bytes(path)) for path in deps)
+        names = [basename, *(name for name, _content in dependencies)]
+        if len(names) != len(set(names)):
+            raise ValueError(f"canonical inputs contain duplicate basenames: {names}")
+        return cls(basename, _read_bytes(benchmark_path), dependencies)
+
+    def materialize(self, destination: str, *, target_name: str | None = None) -> None:
+        _write_bytes(os.path.join(destination, target_name or self.target_name), self.target_bytes)
+        for name, content in self.dependencies:
+            _write_bytes(os.path.join(destination, name), content)
+
+
+def _read_bytes(path: str) -> bytes:
+    with open(path, "rb") as stream:
+        return stream.read()
+
+
+def _write_bytes(path: str, content: bytes) -> None:
+    with open(path, "wb") as stream:
+        stream.write(content)
+
+
+def _build_prompt_from_canonical_inputs(
+    backend: Backend,
+    mode: Mode,
+    canonical_inputs: CanonicalInputs,
+    benchmark_basename: str,
+    tlapm_path: str,
+    tlapm_lib: str,
+) -> str:
+    prompt_dir = tempfile.mkdtemp(prefix="prompt_inputs_")
+    try:
+        canonical_inputs.materialize(prompt_dir)
+        return backend.build_prompt(
+            mode,
+            os.path.join(prompt_dir, canonical_inputs.target_name),
+            [os.path.join(prompt_dir, name) for name, _content in canonical_inputs.dependencies],
+            benchmark_basename,
+            tlapm_path,
+            tlapm_lib,
+        )
+    finally:
+        shutil.rmtree(prompt_dir, ignore_errors=True)
+
+
+def _make_canonical_dir(name_no_ext: str, canonical_inputs: CanonicalInputs) -> str:
     canonical_dir = tempfile.mkdtemp(prefix=f"canon_{name_no_ext}_")
     try:
-        shutil.copy2(benchmark_path, os.path.join(canonical_dir, basename))
-        for dep in deps:
-            shutil.copy2(dep, os.path.join(canonical_dir, os.path.basename(dep)))
+        canonical_inputs.materialize(canonical_dir)
         return canonical_dir
     except Exception:
         shutil.rmtree(canonical_dir, ignore_errors=True)
@@ -285,9 +341,7 @@ def _make_canonical_dir(name_no_ext: str, benchmark_path: str, basename: str, de
 def _make_workspace(
     backend_name: str,
     name_no_ext: str,
-    benchmark_path: str,
-    basename: str,
-    deps: list[str],
+    canonical_inputs: CanonicalInputs,
     *,
     read_only_dependencies: bool = False,
 ) -> str:
@@ -295,9 +349,7 @@ def _make_workspace(
     baseline commit is the cheating check's reference point)."""
     workspace = tempfile.mkdtemp(prefix=f"{backend_name}_bench_{name_no_ext}_")
     try:
-        shutil.copy2(benchmark_path, os.path.join(workspace, basename))
-        for dep in deps:
-            shutil.copy2(dep, os.path.join(workspace, os.path.basename(dep)))
+        canonical_inputs.materialize(workspace)
         subprocess.run(["git", "init"], capture_output=True, cwd=workspace)
         subprocess.run(["git", "add", "."], capture_output=True, cwd=workspace)
         subprocess.run(
@@ -313,10 +365,10 @@ def _make_workspace(
             },
         )
         if read_only_dependencies:
-            target_path = os.path.join(workspace, basename)
+            target_path = os.path.join(workspace, canonical_inputs.target_name)
             os.chmod(target_path, os.stat(target_path).st_mode | stat.S_IWUSR)
-            for dep in deps:
-                os.chmod(os.path.join(workspace, os.path.basename(dep)), 0o444)
+            for dep_name, _content in canonical_inputs.dependencies:
+                os.chmod(os.path.join(workspace, dep_name), 0o444)
         return workspace
     except Exception:
         shutil.rmtree(workspace, ignore_errors=True)
@@ -344,7 +396,7 @@ def _run_backend_with_retries(
     agent_stderr: str,
     result: dict,
     checker_bin: str,
-    deps: list[str],
+    canonical_inputs: CanonicalInputs,
     basename: str,
     name_no_ext: str,
     fixed_workspace: str | None = None,
@@ -356,10 +408,11 @@ def _run_backend_with_retries(
     (INFRA_ERROR + 0 output tokens). A genuine attempt (any output tokens) is
     never re-run.
 
-    Every attempt gets a fresh canonical snapshot for agent self-checking. In
-    local mode the agent can write to that host path, so a failed attempt's copy
-    must never leak into a retry. Modes requiring canonical replay receive a
-    separate fresh snapshot for grading.
+    The runner captures canonical input bytes before the first agent starts.
+    Every attempt gets a fresh copy of those bytes for self-checking. In local
+    mode the agent can write to that host path, so a failed attempt's copy must
+    never leak into a retry. Modes requiring canonical replay receive a separate
+    fresh copy for grading.
     With fixed_workspace=None each attempt also gets a fresh workspace (a
     failed first attempt's partial edits can't leak into a retry); a
     continuation round passes its existing workspace instead — the partial
@@ -395,14 +448,12 @@ def _run_backend_with_retries(
                     result.pop(key, None)
             parsed_metadata_keys.clear()
 
-            canonical_dir = _make_canonical_dir(name_no_ext, item.benchmark_path, basename, deps)
+            canonical_dir = _make_canonical_dir(name_no_ext, canonical_inputs)
             if fixed_workspace is None:
                 workspace = _make_workspace(
                     backend.name,
                     name_no_ext,
-                    item.benchmark_path,
-                    basename,
-                    deps,
+                    canonical_inputs,
                     read_only_dependencies=read_only_dependencies,
                 )
 
@@ -431,7 +482,7 @@ def _run_backend_with_retries(
                         result,
                         canonical_dir,
                         read_only_files=(
-                            [os.path.join(workspace, os.path.basename(dep)) for dep in deps]
+                            [os.path.join(workspace, name) for name, _content in canonical_inputs.dependencies]
                             if read_only_dependencies
                             else None
                         ),
@@ -769,22 +820,20 @@ def run_single_benchmark(item: WorkItem):
     canonical_dir = None
     grading_canonical_dir = None
     try:
-        # Resolve dependencies ONCE — the EXTENDS-closure walk parses files and may
-        # warn (e.g. a goal-bearing module reached via the closure), so a second
-        # call would just repeat that work and double the stderr noise.
-        deps = mode.get_dependencies(item.benchmark_path)
+        canonical_inputs = item.canonical_inputs
+        if canonical_inputs is None:
+            deps = mode.get_dependencies(item.benchmark_path)
+            canonical_inputs = CanonicalInputs.capture(item.benchmark_path, basename, deps)
 
         checker_bin = mode.checker_binary_path()
 
         # Save input artifacts
-        shutil.copy2(item.benchmark_path, os.path.join(input_dir, "benchmark.tla"))
-        for dep in deps:
-            shutil.copy2(dep, os.path.join(input_dir, os.path.basename(dep)))
+        canonical_inputs.materialize(input_dir, target_name="benchmark.tla")
 
-        prompt = backend.build_prompt(
+        prompt = _build_prompt_from_canonical_inputs(
+            backend,
             mode,
-            item.benchmark_path,
-            deps,
+            canonical_inputs,
             basename,
             item.tlapm_path,
             item.tlapm_lib,
@@ -801,7 +850,16 @@ def run_single_benchmark(item: WorkItem):
         # retried on a fresh workspace instead of graded. Everything else gets
         # exactly one attempt.
         run = _run_backend_with_retries(
-            item, prompt, agent_dir, agent_jsonl, agent_stderr, result, checker_bin, deps, basename, name_no_ext
+            item,
+            prompt,
+            agent_dir,
+            agent_jsonl,
+            agent_stderr,
+            result,
+            checker_bin,
+            canonical_inputs,
+            basename,
+            name_no_ext,
         )
         workspace, canonical_dir = run.workspace, run.canonical_dir
 
@@ -867,7 +925,7 @@ def run_single_benchmark(item: WorkItem):
         check_result_path = os.path.join(grading_dir, "check.result")
         grading_canonical_dir = canonical_dir
         if getattr(mode, "canonical_replay_required", False):
-            grading_canonical_dir = _make_canonical_dir(name_no_ext, item.benchmark_path, basename, deps)
+            grading_canonical_dir = _make_canonical_dir(name_no_ext, canonical_inputs)
         if item.use_container:
             _run_grader_container(
                 item,
@@ -893,7 +951,16 @@ def run_single_benchmark(item: WorkItem):
         # the agent is asked to build on its own partial proof. The pass@1 fields
         # above stay untouched; rounds are recorded under result["continuations"].
         if item.max_continuations > 0 and result["check_verdict"] != "PASS" and not is_non_genuine(result):
-            _run_continuations(item, workspace, result, result_dir, basename, name_no_ext, deps, checker_bin)
+            _run_continuations(
+                item,
+                workspace,
+                result,
+                result_dir,
+                basename,
+                name_no_ext,
+                canonical_inputs,
+                checker_bin,
+            )
 
         # Write per-benchmark result.json
         with open(os.path.join(result_dir, "result.json"), "w") as f:
@@ -962,7 +1029,7 @@ def _run_continuations(
     result_dir: str,
     basename: str,
     name_no_ext: str,
-    deps: list[str],
+    canonical_inputs: CanonicalInputs,
     checker_bin: str,
 ) -> None:
     """Continuation rounds (--max-continuations, off by default).
@@ -1021,7 +1088,7 @@ def _run_continuations(
             agent_stderr,
             round_result,
             checker_bin,
-            deps,
+            canonical_inputs,
             basename,
             name_no_ext,
             fixed_workspace=workspace,
@@ -1059,12 +1126,7 @@ def _run_continuations(
             if not cut_short:
                 grading_canonical_dir = run.canonical_dir
                 if getattr(mode, "canonical_replay_required", False):
-                    grading_canonical_dir = _make_canonical_dir(
-                        name_no_ext,
-                        item.benchmark_path,
-                        basename,
-                        deps,
-                    )
+                    grading_canonical_dir = _make_canonical_dir(name_no_ext, canonical_inputs)
                 check_result_path = os.path.join(round_dir, "check.result")
                 if item.use_container:
                     _run_grader_container(
@@ -1718,7 +1780,10 @@ def main():
     else:
         benchmark_root, checker_binary = resolve_paths()
     mode = get_mode(args.mode, benchmark_root, checker_binary)
-    benchmark_files = mode.get_benchmark_files(args.filter)
+    try:
+        benchmark_files = mode.get_benchmark_files(args.filter)
+    except ProofFromScratchContractError as exc:
+        parser.exit(2, f"{parser.prog}: error: {exc}\n")
     if not benchmark_files:
         if args.filter:
             parser.exit(
@@ -1728,6 +1793,19 @@ def main():
         parser.exit(
             2, f"{parser.prog}: error: no benchmarks found for mode {mode.name!r} under {mode.benchmark_dir()}\n"
         )
+
+    canonical_inputs_by_path = {}
+    if getattr(mode, "canonical_replay_required", False):
+        try:
+            for benchmark_path in benchmark_files:
+                dependencies = mode.get_dependencies(benchmark_path)
+                canonical_inputs_by_path[benchmark_path] = CanonicalInputs.capture(
+                    benchmark_path,
+                    os.path.basename(benchmark_path),
+                    dependencies,
+                )
+        except (OSError, ProofFromScratchContractError, ValueError) as exc:
+            parser.exit(2, f"{parser.prog}: error: cannot capture canonical inputs: {exc}\n")
 
     # Resolve capability-dependent defaults only after task discovery. This
     # preserves the useful fail-fast behavior for a misspelled --filter: no
@@ -1893,6 +1971,7 @@ def main():
                 max_continuations=args.max_continuations,
                 keep_container=use_container and args.keep_container,
                 session_dir=session_dir,
+                canonical_inputs=canonical_inputs_by_path.get(bf),
             )
         )
 

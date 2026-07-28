@@ -85,6 +85,7 @@ class GraderInputs:
     smuggled_module: bool = False  # agent-created module sneaking content in
     preamble_modified: bool = False  # proof-completion preamble (defs/CONSTANT/VARIABLE/ASSUME) changed
     scaffold_modified: bool = False  # proof-from-scratch fixed text outside editable regions changed
+    scaffold_format_modified: bool = False  # only newline representation changed outside editable regions
     helper_policy_violated: bool = False
     # Gate B — discharge
     tlapm_obligations_proved: bool = False  # every generated obligation PROVED, none failed
@@ -202,6 +203,13 @@ def grade(inp: GraderInputs) -> GradeResult:
             "fixed task text outside the proof-from-scratch editable regions was modified",
         ),
         Check(
+            "scaffold_format_unchanged",
+            Gate.A_IDENTITY,
+            Status.WIRED,
+            not inp.scaffold_format_modified,
+            "fixed task text used different line endings or final-newline formatting",
+        ),
+        Check(
             "helper_region_valid",
             Gate.A_IDENTITY,
             Status.WIRED,
@@ -269,6 +277,7 @@ def from_tlacheck(
     preamble_modified=False,
     proof_omitted=False,
     scaffold_modified=False,
+    scaffold_format_modified=False,
     legacy_issue_vectors=None,
 ):
     """Migrate existing detection onto the gate inputs (W1).
@@ -280,10 +289,11 @@ def from_tlacheck(
     ``.value``/name distinguishing ``WARNING``).
 
     ``preamble_modified`` (proof-completion byte-match), ``scaffold_modified``
-    (proof-from-scratch fixed-region byte-match), ``proof_omitted`` (agent-added
-    PROOF OMITTED / bare OMITTED), and ``legacy_issue_vectors`` are
-    caller-computed detections. Required canonical replay is a fail-closed
-    checker precondition, not a caller-reported gate input.
+    (proof-from-scratch fixed-region content), ``scaffold_format_modified``
+    (line-ending-only fixed-region changes), ``proof_omitted`` (agent-added
+    PROOF OMITTED / bare OMITTED), and ``legacy_issue_vectors`` are caller-computed
+    detections. Required canonical replay is a fail-closed checker precondition,
+    not a caller-reported gate input.
     """
     vectors = {
         i.vector
@@ -298,6 +308,7 @@ def from_tlacheck(
         smuggled_module="SMUGGLED_MODULE" in vectors,
         preamble_modified=preamble_modified,
         scaffold_modified=scaffold_modified,
+        scaffold_format_modified=scaffold_format_modified,
         helper_policy_violated="HELPER_REGION_VIOLATION" in vectors,
         tlapm_obligations_proved=tlapm_obligations_proved,
         n_missing=n_missing,
