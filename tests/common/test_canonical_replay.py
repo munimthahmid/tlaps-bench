@@ -207,7 +207,6 @@ def test_fixed_scaffold_failure_stops_before_tlapm(tmp_path, monkeypatch):
             "proof-from-scratch",
             "--no-container",
             "--no-git-track",
-            "--canonical-replay-required",
             "--benchmark-dir",
             str(canonical),
             "--tlapm",
@@ -220,7 +219,7 @@ def test_fixed_scaffold_failure_stops_before_tlapm(tmp_path, monkeypatch):
     )
 
     with pytest.raises(SystemExit) as exc_info:
-        check_proof.main()
+        check_proof.main(require_canonical_for_proof_from_scratch=True)
 
     assert exc_info.value.code == 1
     assert "fixed task scaffold outside editable regions was modified" in output.read_text()

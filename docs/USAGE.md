@@ -209,9 +209,11 @@ Check a single proof file for correctness and cheating.
 
 ```bash
 uv run tlaps-bench check path/to/file.tla --mode proof-completion
-uv run tlaps-bench check path/to/file.tla --mode proof-from-scratch
+uv run tlaps-bench check path/to/file.tla --mode proof-from-scratch --benchmark-dir path/to/canonical-context
 uv run tlaps-bench check path/to/file.tla --sany-only
 ```
+
+Proof-from-scratch checks automatically require canonical replay. Pass the directory containing the original target and its declared context with `--benchmark-dir`; inside the evaluator runner this directory is supplied automatically. The command fails closed when no canonical context is available.
 
 By default, `check` reuses `<target-dir>/.tlacache`; use `--no-cache` for a cold check, or `--timeout 0` for no checker deadline.
 

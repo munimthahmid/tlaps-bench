@@ -29,7 +29,14 @@ def _top_help() -> str:
     return "\n".join(lines)
 
 
-def _dispatch(prog: str, module_name: str, attr: str, passthrough: list[str]) -> int:
+def _dispatch(
+    prog: str,
+    module_name: str,
+    attr: str,
+    passthrough: list[str],
+    *,
+    entry_kwargs: dict[str, object] | None = None,
+) -> int:
     """Import ``module_name`` lazily, set argv, and call its entry function.
 
     Lazy import keeps one tool's import errors from breaking the others, and
@@ -42,7 +49,7 @@ def _dispatch(prog: str, module_name: str, attr: str, passthrough: list[str]) ->
     saved_argv = sys.argv
     sys.argv = [prog, *passthrough]
     try:
-        rc = entry()
+        rc = entry(**(entry_kwargs or {}))
     finally:
         sys.argv = saved_argv
     return rc if isinstance(rc, int) else 0
@@ -93,7 +100,13 @@ def main(argv: list[str] | None = None) -> int:
     if sub == "run":
         return _dispatch(f"{PROG} run", "evaluator.runner", "main", rest)
     if sub == "check":
-        return _dispatch(f"{PROG} check", "common.check_proof", "main", rest)
+        return _dispatch(
+            f"{PROG} check",
+            "common.check_proof",
+            "main",
+            rest,
+            entry_kwargs={"require_canonical_for_proof_from_scratch": True},
+        )
     if sub == "validate":
         return _dispatch(f"{PROG} validate", "common.validate", "main", rest)
     if sub == "generate":

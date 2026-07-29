@@ -1007,7 +1007,7 @@ def _run_in_container(filepath, args):
         shutil.rmtree(result_dir, ignore_errors=True)
 
 
-def main():
+def main(*, require_canonical_for_proof_from_scratch: bool = False):
     parser = argparse.ArgumentParser(description="Check a single TLAPS benchmark proof")
     parser.add_argument("file", help="Path to the benchmark .tla file")
     parser.add_argument(
@@ -1086,7 +1086,10 @@ def main():
         help="Rebuild Docker image before running",
     )
     args = parser.parse_args()
-    args.canonical_replay_required = canonical_replay_required(args.canonical_replay_required)
+    args.canonical_replay_required = canonical_replay_required(
+        args.canonical_replay_required
+        or (require_canonical_for_proof_from_scratch and args.mode == "proof-from-scratch")
+    )
 
     # Couple the timeout to the grader's budget: an explicit --timeout wins (the
     # grader passes it); otherwise the agent's bare `check_proof_bin <file>` picks
