@@ -314,14 +314,31 @@ def test_make_workspace_cleans_up_on_setup_failure(tmp_path, monkeypatch):
         created.append(d)
         return d
 
-    def broken_copy2(*a, **kw):
+    def broken_write(*a, **kw):
         raise OSError("disk full")
 
     monkeypatch.setattr(runner.tempfile, "mkdtemp", tracking_mkdtemp)
-    monkeypatch.setattr(runner.shutil, "copy2", broken_copy2)
+    monkeypatch.setattr(runner, "_write_bytes", broken_write)
+    canonical_inputs = runner.CanonicalInputs("Bar.tla", BENCH_TEXT.encode(), ())
     with pytest.raises(OSError):
-        runner._make_workspace("copilot", "Bar", str(tmp_path / "Bar.tla"), "Bar.tla", [])
+        runner._make_workspace("copilot", "Bar", canonical_inputs)
     assert created and not os.path.isdir(created[0])
+
+
+def test_make_workspace_can_make_only_dependencies_read_only(tmp_path):
+    benchmark = tmp_path / "Bar.tla"
+    dependency = tmp_path / "Model.tla"
+    benchmark.write_text(BENCH_TEXT)
+    benchmark.chmod(0o444)
+    dependency.write_text("---- MODULE Model ----\n====\n")
+
+    canonical_inputs = runner.CanonicalInputs.capture(str(benchmark), benchmark.name, [str(dependency)])
+    workspace = runner._make_workspace("copilot", "Bar", canonical_inputs, read_only_dependencies=True)
+    try:
+        assert os.stat(os.path.join(workspace, benchmark.name)).st_mode & 0o200
+        assert os.stat(os.path.join(workspace, dependency.name)).st_mode & 0o777 == 0o444
+    finally:
+        runner.shutil.rmtree(workspace)
 
 
 def test_startup_failure_retried_and_final_attempt_graded(tmp_path, monkeypatch):
@@ -955,6 +972,30 @@ def test_retry_runs_on_fresh_canonical_snapshot(tmp_path, monkeypatch):
     assert agent["canonical_dirs"][0] != agent["canonical_dirs"][1]
     assert grader["canonical_dirs"] == [agent["canonical_dirs"][1]]
     assert seen == [BENCH_TEXT, BENCH_TEXT, BENCH_TEXT]
+
+
+def test_canonical_replay_uses_fresh_snapshot_not_exposed_to_agent(tmp_path, monkeypatch):
+    seen = []
+
+    def taint(canonical_dir):
+        path = os.path.join(canonical_dir, "Bar.tla")
+        with open(path, "w") as f:
+            f.write("TAINTED")
+
+    def inspect(canonical_dir):
+        with open(os.path.join(canonical_dir, "Bar.tla")) as f:
+            seen.append(f.read())
+
+    backend = _ScriptedBackend()
+    item = _work_item(tmp_path, backend)
+    item.mode.canonical_replay_required = True
+    agent = _install_agent(monkeypatch, backend, [dict(GENUINE_FAIL, mutate_canonical=taint)])
+    grader = _install_grader(monkeypatch, inspect_canonical=inspect)
+
+    runner.run_single_benchmark(item)
+
+    assert grader["canonical_dirs"][0] != agent["canonical_dirs"][0]
+    assert seen == [BENCH_TEXT]
 
 
 def test_quota_exhaustion_is_not_infra_retried(tmp_path, monkeypatch):

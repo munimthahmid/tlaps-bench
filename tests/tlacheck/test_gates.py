@@ -22,13 +22,15 @@ CLEAN = GraderInputs(
     extra_axiom=False,
     smuggled_module=False,
     preamble_modified=False,
+    scaffold_modified=False,
+    scaffold_format_modified=False,
+    helper_policy_violated=False,
     tlapm_obligations_proved=True,
     n_missing=0,
     admitted_goal=False,
     proof_omitted=False,
     admitted_extra=False,
     deps_modified=False,
-    graded_on_canonical=True,
 )
 
 
@@ -46,6 +48,9 @@ def test_each_wired_failure_fails_the_run():
         ("extra_axiom", Gate.A_IDENTITY, True),
         ("smuggled_module", Gate.A_IDENTITY, True),
         ("preamble_modified", Gate.A_IDENTITY, True),
+        ("scaffold_modified", Gate.A_IDENTITY, True),
+        ("scaffold_format_modified", Gate.A_IDENTITY, True),
+        ("helper_policy_violated", Gate.A_IDENTITY, True),
         ("tlapm_obligations_proved", Gate.B_DISCHARGE, False),
         ("admitted_goal", Gate.B_DISCHARGE, True),
         ("proof_omitted", Gate.B_DISCHARGE, True),
@@ -69,7 +74,7 @@ def test_placeholders_fail_open():
     # On a clean input, the only PLACEHOLDER/PARTIAL checks must NOT block.
     r = grade(CLEAN)
     placeholders = [c for c in r.checks if c.status is Status.PLACEHOLDER]
-    assert placeholders, "scaffold should carry explicit placeholders (W4/W5)"
+    assert placeholders, "scaffold should carry the explicit W4 placeholder"
     assert all(c.ok for c in placeholders), "placeholders must fail-open"
     assert r.passed
 
@@ -90,6 +95,7 @@ def test_from_tlacheck_buckets_vectors():
         "STATEMENT_MODIFIED": Gate.A_IDENTITY,
         "EXTRA_AXIOM": Gate.A_IDENTITY,
         "SMUGGLED_MODULE": Gate.A_IDENTITY,
+        "HELPER_REGION_VIOLATION": Gate.A_IDENTITY,
         "ADMITTED_STATEMENT": Gate.B_DISCHARGE,
         "ADMITTED_FALLBACK": Gate.B_DISCHARGE,
         "DEPENDENCY_MODIFIED": Gate.C_TRUST,
@@ -113,9 +119,7 @@ def test_from_tlacheck_legacy_signals_flow_to_gates():
 
 
 def test_from_tlacheck_clean_result_passes():
-    inp = from_tlacheck(
-        _result(), tlapm_obligations_proved=True, n_missing=0, sany_valid=True, graded_on_canonical=True
-    )
+    inp = from_tlacheck(_result(), tlapm_obligations_proved=True, n_missing=0, sany_valid=True)
     assert grade(inp).passed
 
 
@@ -153,6 +157,11 @@ def test_failed_integrity_checks_separate_cheats_from_honest_fails():
     assert grade(GraderInputs(**{**CLEAN.__dict__, "n_missing": 1})).failed_integrity_checks() == []
     # Parse failure is an honest reject, not a cheat.
     assert grade(GraderInputs(**{**CLEAN.__dict__, "sany_valid": False})).failed_integrity_checks() == []
+    # Formatting-only byte drift still violates the boundary, but is not
+    # attributed to cheating.
+    format_only = grade(GraderInputs(**{**CLEAN.__dict__, "scaffold_format_modified": True}))
+    assert not format_only.passed
+    assert format_only.failed_integrity_checks() == []
 
 
 if __name__ == "__main__":

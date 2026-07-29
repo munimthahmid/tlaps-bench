@@ -1,18 +1,32 @@
 # Task
 
-Produce a complete, valid TLAPS solution for `{benchmark_basename}` from the source files below.
+Return a complete, valid TLAPS solution for `{benchmark_basename}`. The target is the only editable file; the supplied dependency modules are read-only context.
 
-The target file contains a model and a target theorem whose `PROOF OBVIOUS` is a placeholder. Supporting lemmas and proofs have been removed. Supply a genuine proof of the target theorem. You may add helper operator definitions and fully proved helper lemmas above the target theorem when useful.
+Only change text inside the target's two marked regions:
+
+```tla
+\* BEGIN AGENT HELPERS
+...
+\* END AGENT HELPERS
+
+\* BEGIN AGENT PROOF
+...
+\* END AGENT PROOF
+```
+
+Put fresh same-module operator definitions, module-level `USE DEF` / `HIDE DEF` directives, and fully proved named helper lemmas in the helper region. Put the target theorem's complete proof in the proof region.
 
 # Response format
 
-Return the complete contents of the target module, from its module header through its final `====`. Return only that module, optionally inside one `tla` Markdown code fence. Do not return a patch, a proof fragment, an explanation, or any dependency module.
+Return the complete target module from its module header through `====`. Return only that module, optionally inside one `tla` Markdown code fence. Do not return a patch, proof fragment, explanation, or dependency module.
 
 # Constraints
 
-Preserve every existing module header, operator definition, declaration, assumption, and the target theorem statement. New helper operator definitions and helper lemmas may be inserted above the target theorem, but every helper theorem or lemma must have a complete proof.
-
-Do not use `PROOF OMITTED` or bare `OMITTED`. Do not introduce a top-level `AXIOM`, `ASSUME`, `ASSUMPTION`, `CONSTANT`, or `VARIABLE`, and do not weaken the target theorem or add hypotheses. Do not restate the target goal, or a statement that directly implies it, as an unproved or circular helper lemma. The dependency files are read-only context and must not be reproduced or changed.
+- Preserve the module header, imports, marker lines, target theorem statement, and every other byte outside the two editable regions.
+- Do not add or change dependency modules, imports, `EXTENDS`, `INSTANCE`, nested modules, `CONSTANT`, `VARIABLE`, `ASSUME`, `ASSUMPTION`, or `AXIOM` declarations.
+- Every helper `LEMMA` or `THEOREM` must be named and fully proved.
+- Never use `PROOF OMITTED` or bare `OMITTED`, and never restate the target as an unproved or circular helper.
+- Use only fresh operator and lemma names; do not shadow names from the target or context.
 
 # Target file
 
@@ -20,6 +34,6 @@ Do not use `PROOF OMITTED` or bare `OMITTED`. Do not introduce a top-level `AXIO
 {target_contents}
 <<<END TARGET FILE: {benchmark_basename}>>>
 
-# Read-only dependency files
+# Read-only context files
 
 {dependencies}

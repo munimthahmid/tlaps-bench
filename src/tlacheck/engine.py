@@ -9,6 +9,7 @@ from .rules import (
     admitted_statement,
     dependency_modified,
     extra_axiom,
+    helper_region,
     incomplete_proof,
     smuggled_module,
     statement_modified,
@@ -23,6 +24,7 @@ SANY_RULES = [
     extra_axiom,
     dependency_modified,
     statement_modified,  # target theorem statement must not be weakened/altered
+    helper_region,  # marked helper region allows only safe same-module scaffolding
     incomplete_proof,  # bare-QED / missing step inside a structured proof
 ]
 

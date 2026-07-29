@@ -112,6 +112,24 @@ class TestBuildDockerArgs:
         idx = args.index("-v")
         assert args[idx + 1] == "/tmp/ws:/workspace:rw"
 
+    def test_read_only_file_mounts_follow_writable_workspace(self):
+        runner = ContainerRunner()
+        config = ContainerConfig(
+            workspace="/tmp/ws",
+            read_only_files=[
+                ("/tmp/ws/Model.tla", "/workspace/Model.tla"),
+                ("/tmp/ws/Defs.tla", "/workspace/Defs.tla"),
+            ],
+        )
+        args, _ = runner.build_docker_args(config)
+
+        mount_args = [args[i + 1] for i, arg in enumerate(args) if arg == "-v"]
+        assert mount_args[:3] == [
+            "/tmp/ws:/workspace:rw",
+            "/tmp/ws/Model.tla:/workspace/Model.tla:ro",
+            "/tmp/ws/Defs.tla:/workspace/Defs.tla:ro",
+        ]
+
     def test_result_dir_mount(self):
         runner = ContainerRunner()
         config = ContainerConfig(result_dir="/tmp/res")
@@ -641,7 +659,15 @@ class TestRunAgentContainerSessionWiring:
         assert captured["config"].env["COPILOT_OTEL_EXPORTER_TYPE"] == "file"
         assert captured["config"].env["COPILOT_OTEL_FILE_EXPORTER_PATH"] == "/results/copilot-otel.jsonl"
 
-    def _capture_config(self, tmp_path, *, keep_container=False, session_dir=""):
+    def _capture_config(
+        self,
+        tmp_path,
+        *,
+        keep_container=False,
+        session_dir="",
+        read_only_files=None,
+        canonical_replay_required=False,
+    ):
         from evaluator import runner as runner_mod
 
         backend = CopilotBackend()
@@ -652,6 +678,7 @@ class TestRunAgentContainerSessionWiring:
             keep_container=keep_container,
             session_dir=session_dir,
             container_image="tlaps-bench-base:immutable",
+            mode=MagicMock(canonical_replay_required=canonical_replay_required),
         )
         captured = {}
 
@@ -676,6 +703,7 @@ class TestRunAgentContainerSessionWiring:
                 str(tmp_path / "agent.jsonl"),
                 "prompt",
                 result,
+                read_only_files=read_only_files,
             )
         return captured["config"]
 
@@ -703,6 +731,22 @@ class TestRunAgentContainerSessionWiring:
         config = self._capture_config(tmp_path, keep_container=True)
         assert config.keep_container is True
         assert config.container_name.startswith("tlaps-bench-My-Bench-")
+
+    def test_read_only_workspace_files_are_mounted_at_their_basenames(self, tmp_path):
+        workspace = tmp_path / "ws"
+        context = [workspace / "Model.tla", workspace / "Defs.tla"]
+
+        config = self._capture_config(tmp_path, read_only_files=[str(path) for path in context])
+
+        assert config.read_only_files == [
+            (str(workspace / "Model.tla"), "/workspace/Model.tla"),
+            (str(workspace / "Defs.tla"), "/workspace/Defs.tla"),
+        ]
+
+    def test_required_canonical_replay_is_propagated_to_agent_self_check(self, tmp_path):
+        config = self._capture_config(tmp_path, canonical_replay_required=True)
+
+        assert config.env["TLAPS_CANONICAL_REPLAY_REQUIRED"] == "1"
 
 
 class TestResolveSessionDir:

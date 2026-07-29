@@ -177,6 +177,48 @@ public class DumpSemantics {
     }
     j.closeArray();
 
+    // Nested modules
+    j.openArrayField("inner_modules");
+    for (ModuleNode inner : m.getInnerModules()) {
+      if (!isFromFile(inner, moduleFile)) continue;
+      j.openObject();
+      j.field("name", inner.getName().toString());
+      emitLoc(j, inner);
+      j.closeObject();
+    }
+    j.closeArray();
+
+    // Module-level USE/HIDE directives and any top-level node kind not covered
+    // by the normalized schema above. Proof-step directives are nested inside
+    // theorem proofs and therefore do not appear in m.getTopLevel().
+    j.openArrayField("directives");
+    for (LevelNode node : m.getTopLevel()) {
+      if (!isFromFile(node, moduleFile) || !(node instanceof UseOrHideNode)) continue;
+      UseOrHideNode directive = (UseOrHideNode) node;
+      j.openObject();
+      j.field("kind", node.getKind() == ASTConstants.UseKind ? "USE" : "HIDE");
+      j.field("definitions_only",
+              (directive.facts == null || directive.facts.length == 0)
+              && directive.defs != null && directive.defs.length > 0);
+      emitLoc(j, node);
+      j.closeObject();
+    }
+    j.closeArray();
+
+    j.openArrayField("other_top_levels");
+    for (LevelNode node : m.getTopLevel()) {
+      if (!isFromFile(node, moduleFile)
+          || node instanceof TheoremNode
+          || node instanceof AssumeNode
+          || node instanceof InstanceNode
+          || node instanceof UseOrHideNode) continue;
+      j.openObject();
+      j.field("kind", node.getClass().getSimpleName());
+      emitLoc(j, node);
+      j.closeObject();
+    }
+    j.closeArray();
+
     // Operator definitions
     j.openArrayField("operators");
     for (OpDefNode op : m.getOpDefs()) {

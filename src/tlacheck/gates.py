@@ -15,8 +15,8 @@ This module IS the framework (W0): a benchmark solution passes iff
                  restated lemma, the agent added no PROOF OMITTED step, and (W3)
                  the only admitted steps are exactly the baseline's GIVEN lemmas.
   C — TRUST:     grading ran on trusted files — a given dependency was not
-                 modified, and (W5) grading replays on canonical read-only
-                 deps/model with tlapm unmodified.
+                 modified. Evaluator modes that require canonical replay enforce
+                 it as a fail-closed execution precondition before this gate.
 
 "Cheating" is NOT a separate verdict: a cheat is simply some gate failing, so the
 outcome is BINARY PASS/FAIL. The per-check reasons are kept for the agent's
@@ -36,8 +36,9 @@ than today's checker. Never delete a WIRED check before its stronger replacement
 (the PARTIAL/PLACEHOLDER it would subsume) actually lands.
 
 Roadmap (status per check below): W3 tighten admitted-set to a baseline set-diff;
-W4 semantic statement-match (catch operator redefinition); W5 trusted-file replay
-(discard dependency edits rather than merely detecting them).
+W4 semantic statement-match (catch operator redefinition). W5 trusted-file replay
+is enforced by ``check_proof`` control flow rather than a caller-reported gate
+boolean.
 """
 
 from __future__ import annotations
@@ -83,6 +84,9 @@ class GraderInputs:
     extra_axiom: bool = False  # new AXIOM/ASSUME beyond baseline
     smuggled_module: bool = False  # agent-created module sneaking content in
     preamble_modified: bool = False  # proof-completion preamble (defs/CONSTANT/VARIABLE/ASSUME) changed
+    scaffold_modified: bool = False  # proof-from-scratch fixed text outside editable regions changed
+    scaffold_format_modified: bool = False  # only newline representation changed outside editable regions
+    helper_policy_violated: bool = False
     # Gate B — discharge
     tlapm_obligations_proved: bool = False  # every generated obligation PROVED, none failed
     n_missing: int = 0  # `--strict` MISSING steps (agent gaps)
@@ -91,7 +95,6 @@ class GraderInputs:
     admitted_extra: bool = False  # agent added an admitted lemma beyond baseline (W3)
     # Gate C — trust
     deps_modified: bool = False  # a given dependency file was changed
-    graded_on_canonical: bool = False  # grading used canonical read-only files (W5)
 
 
 @dataclass
@@ -121,6 +124,7 @@ VECTOR_GATE = {
     "STATEMENT_MODIFIED": Gate.A_IDENTITY,
     "EXTRA_AXIOM": Gate.A_IDENTITY,
     "SMUGGLED_MODULE": Gate.A_IDENTITY,
+    "HELPER_REGION_VIOLATION": Gate.A_IDENTITY,
     "ADMITTED_STATEMENT": Gate.B_DISCHARGE,
     "ADMITTED_FALLBACK": Gate.B_DISCHARGE,
     "INCOMPLETE_PROOF": Gate.B_DISCHARGE,
@@ -142,11 +146,12 @@ INTEGRITY_CHECKS = frozenset(
         "no_smuggled_module",
         "no_smuggled_definition",
         "preamble_unchanged",
+        "scaffold_unchanged",
+        "helper_region_valid",
         "no_admitted_goal",
         "no_added_omitted",
         "admitted_set_eq_baseline",
         "deps_unmodified",
-        "graded_on_canonical",
     }
 )
 
@@ -189,6 +194,27 @@ def grade(inp: GraderInputs) -> GradeResult:
             Status.WIRED,
             not inp.preamble_modified,
             "the proof-completion preamble (definitions / CONSTANT / VARIABLE / ASSUME above PROOF OBVIOUS) was modified",
+        ),
+        Check(
+            "scaffold_unchanged",
+            Gate.A_IDENTITY,
+            Status.WIRED,
+            not inp.scaffold_modified,
+            "fixed task text outside the proof-from-scratch editable regions was modified",
+        ),
+        Check(
+            "scaffold_format_unchanged",
+            Gate.A_IDENTITY,
+            Status.WIRED,
+            not inp.scaffold_format_modified,
+            "fixed task text used different line endings or final-newline formatting",
+        ),
+        Check(
+            "helper_region_valid",
+            Gate.A_IDENTITY,
+            Status.WIRED,
+            not inp.helper_policy_violated,
+            "an editable region contains a forbidden, misplaced, or unproved declaration",
         ),
         Check(
             "no_smuggled_definition",
@@ -238,14 +264,6 @@ def grade(inp: GraderInputs) -> GradeResult:
         Check(
             "deps_unmodified", Gate.C_TRUST, Status.WIRED, not inp.deps_modified, "a given dependency file was modified"
         ),
-        Check(
-            "graded_on_canonical",
-            Gate.C_TRUST,
-            Status.PLACEHOLDER,
-            True,
-            "TODO(W5) trusted replay: re-run tlapm on canonical read-only deps + the agent's "
-            "proof so dependency edits are discarded rather than merely detected",
-        ),
     ]
     return GradeResult(passed=all(c.ok for c in checks), checks=checks)
 
@@ -258,7 +276,8 @@ def from_tlacheck(
     sany_valid,
     preamble_modified=False,
     proof_omitted=False,
-    graded_on_canonical=False,
+    scaffold_modified=False,
+    scaffold_format_modified=False,
     legacy_issue_vectors=None,
 ):
     """Migrate existing detection onto the gate inputs (W1).
@@ -269,10 +288,12 @@ def from_tlacheck(
     ``.issues`` where each issue has ``.vector`` and ``.severity`` (with a
     ``.value``/name distinguishing ``WARNING``).
 
-    ``preamble_modified`` (proof-completion byte-match), ``proof_omitted``
-    (agent-added PROOF OMITTED / bare OMITTED), and ``legacy_issue_vectors`` are
-    caller-computed detections from the older scan path. ``graded_on_canonical``
-    records whether the grade ran on trusted read-only files (W5).
+    ``preamble_modified`` (proof-completion byte-match), ``scaffold_modified``
+    (proof-from-scratch fixed-region content), ``scaffold_format_modified``
+    (line-ending-only fixed-region changes), ``proof_omitted`` (agent-added
+    PROOF OMITTED / bare OMITTED), and ``legacy_issue_vectors`` are caller-computed
+    detections. Required canonical replay is a fail-closed checker precondition,
+    not a caller-reported gate input.
     """
     vectors = {
         i.vector
@@ -286,6 +307,9 @@ def from_tlacheck(
         extra_axiom="EXTRA_AXIOM" in vectors,
         smuggled_module="SMUGGLED_MODULE" in vectors,
         preamble_modified=preamble_modified,
+        scaffold_modified=scaffold_modified,
+        scaffold_format_modified=scaffold_format_modified,
+        helper_policy_violated="HELPER_REGION_VIOLATION" in vectors,
         tlapm_obligations_proved=tlapm_obligations_proved,
         n_missing=n_missing,
         admitted_goal=bool(vectors & {"ADMITTED_STATEMENT", "ADMITTED_FALLBACK"}),
@@ -294,5 +318,4 @@ def from_tlacheck(
         # WIRED no_admitted_goal check covers the known cases until W3 lands.
         admitted_extra=False,
         deps_modified="DEPENDENCY_MODIFIED" in vectors,
-        graded_on_canonical=graded_on_canonical,
     )

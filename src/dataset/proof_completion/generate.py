@@ -15,69 +15,11 @@ import glob
 import os
 import re
 
-# Modules that tlapm resolves via an -I path, so they should NOT be merged/copied
-# as local dependency modules. Two groups:
-#   STDLIB_MODULES    — bundled with tlapm 1.6 (~/.tlapm/lib/tlapm/stdlib)
-#   COMMUNITY_MODULES — vendored CommunityModules in lib/community/ (added to the
-#                       tlapm -I path by install_deps.sh + validate.py/check_proof.py)
-# RESOLVABLE_MODULES (the union) is the single source of truth used by this
-# generator AND imported by validate.py and scripts/import_tlaps_example.py.
-STDLIB_MODULES = {
-    "TLAPS",
-    "Integers",
-    "Naturals",
-    "Sequences",
-    "FiniteSets",
-    "Reals",
-    "Bags",
-    "TLC",
-    "NaturalsInduction",
-    "SequenceTheorems",
-    "WellFoundedInduction",
-    "ProtoReals",
-    "Functions",
-    "SequenceOpTheorems",
-    "BagsTheorems",
-    "RealNumberTheorems",
-    # tlapm 1.6 also bundles these theorem libraries (e.g. Majority's proof needs
-    # FiniteSetTheorems' FS_*).
-    "FiniteSetTheorems",
-    "FunctionTheorems",
-    "Folds",
-    "FiniteSetTheorems_proofs",
-    "SequenceTheorems_proofs",
-    "NaturalsInduction_proofs",
-    "WellFoundedInduction_proofs",
-    "BagsTheorems_proofs",
-    "RealTime",
-}
+from common import tla_modules as _tla_modules
 
-# Vendored CommunityModules (lib/community/).
-COMMUNITY_MODULES = {
-    "SequencesExt",
-    "SequencesExtTheorems",
-    "FiniteSetsExt",
-    "FunctionsExt",
-    "BagsExt",
-    "Relation",
-    "Graphs",
-    "GraphTheorems",
-    "GraphsExt",
-    "Combinatorics",
-    "DyadicRationals",
-    "Bitwise",
-    "Statistics",
-    "VectorClocks",
-    "IOUtils",
-    "CSV",
-    "SVG",
-    "TLCExt",
-    "Json",
-    "Randomization",
-}
-
-# Everything tlapm resolves without copying.
-RESOLVABLE_MODULES = STDLIB_MODULES | COMMUNITY_MODULES
+COMMUNITY_MODULES = _tla_modules.COMMUNITY_MODULES
+RESOLVABLE_MODULES = _tla_modules.RESOLVABLE_MODULES
+STDLIB_MODULES = _tla_modules.STDLIB_MODULES
 
 # Directories to process (top-level module dirs).
 # File lives at <repo>/src/dataset/proof_completion/generate.py; ascend three levels for the repo root.

@@ -138,7 +138,7 @@ class Operator:
 
 @dataclass
 class Symbol:
-    """A CONSTANT or VARIABLE declaration."""
+    """A named semantic symbol with its declaration location."""
 
     name: str
     loc: Loc | None
@@ -146,6 +146,31 @@ class Symbol:
     @classmethod
     def parse(cls, d: dict) -> Symbol:
         return cls(name=d.get("name"), loc=Loc.parse(d.get("loc")))
+
+
+@dataclass
+class ModuleDirective:
+    kind: str
+    definitions_only: bool
+    loc: Loc | None
+
+    @classmethod
+    def parse(cls, d: dict) -> ModuleDirective:
+        return cls(
+            kind=d.get("kind"),
+            definitions_only=bool(d.get("definitions_only", False)),
+            loc=Loc.parse(d.get("loc")),
+        )
+
+
+@dataclass
+class TopLevelNode:
+    kind: str
+    loc: Loc | None
+
+    @classmethod
+    def parse(cls, d: dict) -> TopLevelNode:
+        return cls(kind=d.get("kind"), loc=Loc.parse(d.get("loc")))
 
 
 @dataclass
@@ -163,6 +188,9 @@ class Module:
     operators: list[Operator]
     spec_formulas: list[str]
     theorems: list[Theorem]
+    inner_modules: list[Symbol] = field(default_factory=list)
+    directives: list[ModuleDirective] = field(default_factory=list)
+    other_top_levels: list[TopLevelNode] = field(default_factory=list)
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -181,6 +209,9 @@ class Module:
             operators=[Operator.parse(x) for x in d.get("operators", [])],
             spec_formulas=list(d.get("spec_formulas") or []),
             theorems=[Theorem.parse(x) for x in d.get("theorems", [])],
+            inner_modules=[Symbol.parse(x) for x in d.get("inner_modules", [])],
+            directives=[ModuleDirective.parse(x) for x in d.get("directives", [])],
+            other_top_levels=[TopLevelNode.parse(x) for x in d.get("other_top_levels", [])],
             raw=d,
         )
 

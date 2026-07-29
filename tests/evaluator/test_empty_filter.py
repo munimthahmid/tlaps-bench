@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from common.proof_from_scratch_contract import ManifestError
 from evaluator import runner
 from evaluator.modes.base import Mode
 
@@ -17,6 +18,13 @@ class EmptyMode:
 
     def benchmark_dir(self):
         return "/benchmarks/proof-completion"
+
+
+class InvalidContractMode:
+    name = "proof-from-scratch"
+
+    def get_benchmark_files(self, filter_pattern=None):
+        raise ManifestError("missing proof-from-scratch manifest: /benchmarks/manifest.json")
 
 
 class FixtureMode(Mode):
@@ -54,3 +62,19 @@ def test_empty_comma_filter_does_not_match_every_benchmark(tmp_path):
     mode = FixtureMode(str(tmp_path), "/checker")
 
     assert mode.get_benchmark_files("missing,") == []
+
+
+def test_invalid_manifest_is_reported_as_cli_error(monkeypatch, capsys):
+    backend = MagicMock()
+    monkeypatch.setattr(runner, "get_backend", lambda *args, **kwargs: backend)
+    monkeypatch.setattr(runner, "get_mode", lambda *args, **kwargs: InvalidContractMode())
+    monkeypatch.setattr(sys, "argv", ["tlaps-bench run", "--mode", "proof-from-scratch"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        runner.main()
+
+    assert exc_info.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "error: missing proof-from-scratch manifest" in stderr
+    assert "Traceback" not in stderr
+    backend.check_auth.assert_not_called()
