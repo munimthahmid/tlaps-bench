@@ -116,6 +116,7 @@ ENV SANY_RUN_SH=/opt/sany/src/dataset/sany-dump/run.sh \
 # Layer 8: Provider runners
 COPY src/evaluator/backends/litellm_agent.py /opt/litellm_agent.py
 COPY src/evaluator/backends/oneshot_runner.py /opt/oneshot_runner.py
+COPY src/evaluator/backends/codex_usage_wrapper.py /opt/codex_usage_wrapper.py
 
 # Lock down checker + SANY
 RUN chmod 0755 /usr/local/bin/check_proof_bin \

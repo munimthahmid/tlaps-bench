@@ -30,6 +30,7 @@ from evaluator.termination import (
     is_wall_clock_timeout,
     litellm_completion_error,
     one_shot_result_error,
+    pi_run_failed,
     startup_error_snippet,
 )
 
@@ -147,6 +148,20 @@ def _strict_audit(provider, requests=1, contract_ok=True, completed_responses=0,
     return audit
 
 
+def _pi_message_end(stop_reason="stop", *, error_message=None):
+    message = {
+        "role": "assistant",
+        "content": [],
+        "provider": "openai",
+        "model": "gpt-test",
+        "api": "openai-responses",
+        "stopReason": stop_reason,
+    }
+    if error_message is not None:
+        message["errorMessage"] = error_message
+    return {"type": "message_end", "message": message}
+
+
 def test_turn_failed_is_infra(tmp_path):
     p = _write_jsonl(tmp_path / "infra.jsonl", INFRA_STREAM)
     assert classify(_ctx(p)) == TerminationReason.INFRA_ERROR
@@ -165,6 +180,35 @@ def test_recovered_midrun_error_is_ok(tmp_path):
 def test_errored_without_completing_a_turn_is_infra(tmp_path):
     p = _write_jsonl(tmp_path / "killed.jsonl", ERRORED_NO_TURN_STREAM)
     assert classify(_ctx(p)) == TerminationReason.INFRA_ERROR
+
+
+def test_codex_wrapper_marker_does_not_hide_nonzero_startup_failure(tmp_path):
+    path = _write_jsonl(
+        tmp_path / "codex-wrapper-startup.jsonl",
+        [{"type": "tlaps.codex_child_usage.started", "version": 1}],
+    )
+
+    assert classify(_ctx(path, agent_exit=127)) == TerminationReason.INFRA_ERROR
+
+
+def test_codex_nonempty_stream_without_terminal_is_infra_even_after_zero_exit(tmp_path):
+    path = _write_jsonl(
+        tmp_path / "codex-truncated.jsonl",
+        [
+            {"type": "tlaps.codex_child_usage.started", "version": 1},
+            {"type": "thread.started", "thread_id": "thread-1"},
+        ],
+    )
+
+    assert classify(_ctx(path, agent_exit=0)) == TerminationReason.INFRA_ERROR
+
+
+def test_codex_empty_or_missing_stream_is_infra_even_after_zero_exit(tmp_path):
+    empty = tmp_path / "codex-empty.jsonl"
+    empty.write_text("")
+
+    assert classify(_ctx(str(empty), agent_exit=0)) == TerminationReason.INFRA_ERROR
+    assert classify(_ctx(str(tmp_path / "codex-missing.jsonl"), agent_exit=0)) == TerminationReason.INFRA_ERROR
 
 
 def test_rule_only_applies_to_its_backend(tmp_path):
@@ -201,9 +245,130 @@ def test_litellm_response_after_error_is_ok(tmp_path):
     assert classify(_ctx(path, backend="litellm")) == TerminationReason.OK
 
 
+def test_pi_session_header_only_startup_failure_is_infra(tmp_path):
+    path = _write_jsonl(
+        tmp_path / "pi-startup.jsonl",
+        [{"type": "session", "version": 3, "id": "session-1"}],
+    )
+
+    assert classify(_ctx(path, backend="pi", agent_exit=1)) == TerminationReason.INFRA_ERROR
+
+
+@pytest.mark.parametrize("stop_reason", ["error", "aborted"])
+def test_pi_settled_terminal_error_is_infra_even_with_zero_exit(tmp_path, stop_reason):
+    path = _write_jsonl(
+        tmp_path / f"pi-{stop_reason}.jsonl",
+        [
+            {"type": "session", "version": 3, "id": "session-1"},
+            {"type": "agent_start"},
+            _pi_message_end(stop_reason, error_message="provider request failed"),
+            {"type": "agent_end", "messages": [], "willRetry": False},
+            {"type": "agent_settled"},
+        ],
+    )
+
+    assert classify(_ctx(path, backend="pi", agent_exit=0)) == TerminationReason.INFRA_ERROR
+
+
+def test_pi_recovered_error_uses_final_assistant_outcome(tmp_path):
+    path = _write_jsonl(
+        tmp_path / "pi-recovered.jsonl",
+        [
+            {"type": "session", "version": 3, "id": "session-1"},
+            {"type": "agent_start"},
+            _pi_message_end("error", error_message="transient provider failure"),
+            {"type": "agent_end", "messages": [], "willRetry": True},
+            {"type": "agent_start"},
+            _pi_message_end("stop"),
+            {"type": "agent_end", "messages": [], "willRetry": False},
+            {"type": "agent_settled"},
+        ],
+    )
+
+    assert pi_run_failed(_ctx(path, backend="pi", agent_exit=0)) is None
+    assert classify(_ctx(path, backend="pi", agent_exit=0)) == TerminationReason.OK
+
+
+def test_pi_success_requires_agent_settled(tmp_path):
+    events = [
+        {"type": "session", "version": 3, "id": "session-1"},
+        {"type": "agent_start"},
+        _pi_message_end("stop"),
+        {"type": "agent_end", "messages": [], "willRetry": False},
+    ]
+    truncated = _write_jsonl(tmp_path / "pi-truncated.jsonl", events)
+    settled = _write_jsonl(tmp_path / "pi-settled.jsonl", [*events, {"type": "agent_settled"}])
+
+    assert classify(_ctx(truncated, backend="pi", agent_exit=0)) == TerminationReason.INFRA_ERROR
+    assert classify(_ctx(settled, backend="pi", agent_exit=0)) == TerminationReason.OK
+
+
+def test_pi_nonzero_exit_and_activity_after_settlement_are_infra(tmp_path):
+    clean_events = [
+        {"type": "session", "version": 3, "id": "session-1"},
+        {"type": "agent_start"},
+        _pi_message_end("stop"),
+        {"type": "agent_end", "messages": [], "willRetry": False},
+        {"type": "agent_settled"},
+    ]
+    nonzero = _write_jsonl(tmp_path / "pi-nonzero.jsonl", clean_events)
+    trailing = _write_jsonl(tmp_path / "pi-trailing.jsonl", [*clean_events, {"type": "agent_start"}])
+
+    assert classify(_ctx(nonzero, backend="pi", agent_exit=1)) == TerminationReason.INFRA_ERROR
+    assert classify(_ctx(trailing, backend="pi", agent_exit=0)) == TerminationReason.INFRA_ERROR
+
+
+def test_pi_second_lifecycle_after_settlement_stays_infra_after_another_settlement(tmp_path):
+    path = _write_jsonl(
+        tmp_path / "pi-reopened.jsonl",
+        [
+            {"type": "session", "version": 3, "id": "session-1"},
+            _pi_message_end("stop"),
+            {"type": "agent_settled"},
+            {"type": "agent_start"},
+            _pi_message_end("stop"),
+            {"type": "agent_settled"},
+        ],
+    )
+
+    assert classify(_ctx(path, backend="pi", agent_exit=0)) == TerminationReason.INFRA_ERROR
+
+
+@pytest.mark.parametrize("stop_reason", [None, "", "future_reason"])
+def test_pi_unknown_final_stop_reason_is_infra(tmp_path, stop_reason):
+    path = _write_jsonl(
+        tmp_path / "pi-invalid-terminal.jsonl",
+        [_pi_message_end(stop_reason), {"type": "agent_settled"}],
+    )
+
+    assert classify(_ctx(path, backend="pi", agent_exit=0)) == TerminationReason.INFRA_ERROR
+
+
+def test_pi_malformed_stream_is_infra_even_with_a_later_terminal(tmp_path):
+    path = tmp_path / "pi-malformed.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                "{not-json",
+                json.dumps(_pi_message_end("stop")),
+                json.dumps({"type": "agent_settled"}),
+            ]
+        )
+        + "\n"
+    )
+
+    assert classify(_ctx(str(path), backend="pi", agent_exit=0)) == TerminationReason.INFRA_ERROR
+
+
+def test_pi_rule_only_applies_to_pi(tmp_path):
+    path = _write_jsonl(tmp_path / "pi-error.jsonl", [_pi_message_end("error"), {"type": "agent_settled"}])
+
+    assert pi_run_failed(_ctx(path, backend="custom", agent_exit=0)) is None
+
+
 def test_missing_stream_is_ok(tmp_path):
-    # No event file (e.g. agent never launched) must not crash and is not INFRA.
-    assert classify(_ctx(str(tmp_path / "nope.jsonl"))) == TerminationReason.OK
+    # A backend with no strict stream contract must not crash or invent INFRA.
+    assert classify(_ctx(str(tmp_path / "nope.jsonl"), backend="custom")) == TerminationReason.OK
 
 
 # --- wall-clock timeout: a LIMIT, consistent across backends, never INFRA -----
@@ -216,6 +381,7 @@ TRUNCATED_BY_BACKEND = {
     "claude_code": [{"type": "system", "subtype": "init"}, {"type": "assistant", "message": {}}],
     "copilot": [{"type": "assistant.message", "data": {"content": "working"}}],
     "cursor": [{"type": "system", "subtype": "init"}, {"type": "assistant", "message": {}}],
+    "pi": [{"type": "session", "version": 3, "id": "session-1"}, {"type": "agent_start"}],
 }
 
 
@@ -242,13 +408,13 @@ def test_timeout_is_timeout_not_infra_for_every_backend(tmp_path):
 def test_same_truncation_without_timeout_is_still_infra(tmp_path):
     # Without the timeout signal, a truncated stream is a genuine cut-off (crash /
     # dropped connection) → INFRA_ERROR. Asserts the timeout precheck is the only
-    # thing reclassifying these, and only for codex does a clean SIGKILL-less
-    # truncation read as OK (no error/turn.failed to key on).
+    # thing reclassifying these.
     expected = {
-        "codex": TerminationReason.OK,
+        "codex": TerminationReason.INFRA_ERROR,
         "claude_code": TerminationReason.INFRA_ERROR,
         "copilot": TerminationReason.INFRA_ERROR,
         "cursor": TerminationReason.INFRA_ERROR,
+        "pi": TerminationReason.INFRA_ERROR,
     }
     for backend, stream in TRUNCATED_BY_BACKEND.items():
         p = _write_jsonl(tmp_path / f"{backend}.jsonl", stream)
@@ -262,6 +428,7 @@ def test_registry_is_the_extension_point():
     assert copilot_session_error in INFRA_RULES
     assert cursor_result_error in INFRA_RULES
     assert litellm_completion_error in INFRA_RULES
+    assert pi_run_failed in INFRA_RULES
     assert one_shot_result_error in INFRA_RULES
     assert agent_startup_failure in INFRA_RULES
 

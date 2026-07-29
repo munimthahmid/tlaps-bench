@@ -16,11 +16,11 @@ inspects a ``TerminationContext`` and returns a reason if it fires, else
 ``None``; the first that fires wins. There is one rule per backend
 (:func:`codex_turn_failed`, :func:`claude_code_result_error`,
 :func:`copilot_session_error`, :func:`cursor_result_error`,
-:func:`litellm_completion_error`), each branching on ``ctx.backend`` to read its
-own event vocabulary, plus one backend-independent startup rule
-(:func:`agent_startup_failure`) for the CLI dying before emitting a single event.
-The one-shot rule may also return TIMEOUT for a strictly audited provider
-deadline. Add more by appending to :data:`INFRA_RULES`.
+:func:`litellm_completion_error`, :func:`pi_run_failed`), each branching on
+``ctx.backend`` to read its own event vocabulary, plus one backend-independent
+startup rule (:func:`agent_startup_failure`) for the CLI dying before emitting
+a single event. The one-shot rule may also return TIMEOUT for a strictly
+audited provider deadline. Add more by appending to :data:`INFRA_RULES`.
 
 This module only CLASSIFIES. Acting on the classification (the runner auto-
 retries an INFRA_ERROR run whose model did no work) is left to the caller.
@@ -156,25 +156,26 @@ def codex_turn_failed(ctx: TerminationContext) -> str | None:
     prove it" run, by contrast, ends with ``turn.completed`` (the model ran to
     a normal stop; its proof simply didn't verify).
 
-    We flag INFRA_ERROR when the last terminal turn event is a failure, or when
-    the run errored without ever completing a turn. A run that hit a transient
-    error mid-way but recovered and completed a turn is NOT flagged.
+    We flag INFRA_ERROR when the last terminal turn event is a failure, when the
+    stream ends without a terminal, or when the required JSON stream is empty.
+    A run that hit a transient error mid-way but recovered and completed a turn
+    is NOT flagged.
     """
     if ctx.backend != "codex":
         return None
+    events = ctx.events()
+    if not events:
+        return TerminationReason.INFRA_ERROR
     last_terminal = None  # "completed" | "failed"
-    saw_error = False
-    for ev in ctx.events():
+    for ev in events:
         t = ev.get("type")
         if t == "turn.completed":
             last_terminal = "completed"
         elif t == "turn.failed":
             last_terminal = "failed"
-        elif t == "error":
-            saw_error = True
     if last_terminal == "failed":
         return TerminationReason.INFRA_ERROR
-    if last_terminal is None and saw_error:
+    if last_terminal is None:
         return TerminationReason.INFRA_ERROR
     return None
 
@@ -291,6 +292,74 @@ def litellm_completion_error(ctx: TerminationContext) -> str | None:
     return None
 
 
+_PI_RUN_ACTIVITY_EVENTS = frozenset(
+    {
+        "agent_start",
+        "agent_end",
+        "turn_start",
+        "turn_end",
+        "message_start",
+        "message_update",
+        "message_end",
+        "tool_execution_start",
+        "tool_execution_update",
+        "tool_execution_end",
+        "compaction_start",
+        "compaction_end",
+    }
+)
+
+
+def pi_run_failed(ctx: TerminationContext) -> str | None:
+    """Pi rule: require a settled run whose final assistant response succeeded.
+
+    Pi writes a ``session`` header before it starts the prompt, so startup
+    failures commonly leave a non-empty stream and bypass the generic empty-
+    stream rule. JSON mode also exits zero when the provider's final assistant
+    message has ``stopReason == "error"`` or ``"aborted"``. ``agent_settled``
+    is the definitive end of Pi's automatic retries, compaction, and queued
+    continuations; ``agent_end`` alone is not terminal.
+
+    Earlier assistant errors are allowed when a later response recovered. A
+    runner wall-clock timeout is checked before this rule by :func:`classify`.
+    """
+
+    if ctx.backend != "pi":
+        return None
+
+    events = ctx.events()
+    if not ctx.event_stream_valid():
+        return TerminationReason.INFRA_ERROR
+    settled = False
+    activity_after_settled = False
+    last_assistant_stop_reason: object = None
+    saw_assistant_terminal = False
+
+    for event in events:
+        event_type = event.get("type")
+        if settled and event_type in _PI_RUN_ACTIVITY_EVENTS:
+            activity_after_settled = True
+        if event_type == "agent_settled":
+            settled = True
+        elif event_type == "message_end":
+            message = event.get("message")
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                saw_assistant_terminal = True
+                last_assistant_stop_reason = message.get("stopReason")
+
+    if ctx.agent_exit not in {None, 0}:
+        return TerminationReason.INFRA_ERROR
+    if not settled:
+        return TerminationReason.INFRA_ERROR
+    if activity_after_settled:
+        return TerminationReason.INFRA_ERROR
+    if not saw_assistant_terminal:
+        return TerminationReason.INFRA_ERROR
+    if last_assistant_stop_reason not in {"stop", "length", "toolUse"}:
+        return TerminationReason.INFRA_ERROR
+    return None
+
+
 def one_shot_result_error(ctx: TerminationContext) -> str | None:
     """One-shot rule: require an audited terminal result and one clean response.
 
@@ -378,6 +447,7 @@ INFRA_RULES: list[Rule] = [
     copilot_session_error,
     cursor_result_error,
     litellm_completion_error,
+    pi_run_failed,
     one_shot_result_error,
     agent_startup_failure,
 ]
