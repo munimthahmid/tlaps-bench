@@ -787,7 +787,7 @@ class PiBackend(AgenticBackend):
             (
                 "prompt=$(cat); "
                 f"cd {shlex.quote(workspace)}; "
-                "pi --mode json --no-session "
+                "pi --mode json --no-session --approve "
                 f"{thinking_option}"
                 f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} "
                 '"$prompt"'

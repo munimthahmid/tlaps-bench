@@ -22,9 +22,10 @@ SUPPORTED_BACKENDS = [
     ("claude_code", ".claude/skills"),
     ("copilot", ".github/skills"),
     ("cursor", ".agents/skills"),
+    ("litellm", ".agents/skills"),
     ("pi", ".agents/skills"),
 ]
-UNSUPPORTED_BACKENDS = ["litellm", "copilot_oneshot", "litellm_oneshot"]
+UNSUPPORTED_BACKENDS = ["copilot_oneshot", "litellm_oneshot"]
 BENCHMARK = "---- MODULE Task ----\nTHEOREM Goal == TRUE\nPROOF OBVIOUS\n====\n"
 
 
@@ -260,13 +261,14 @@ def test_unsupported_backends_receive_no_skills_and_report_empty_metadata(tmp_pa
         runner.shutil.rmtree(workspace)
 
 
-def test_quota_skip_records_sorted_skill_availability(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend_name", ["codex", "litellm"])
+def test_quota_skip_records_sorted_skill_availability(tmp_path, monkeypatch, backend_name):
     catalog = tmp_path / "catalog"
     _write_catalog(catalog)
     monkeypatch.setattr(runner, "SKILLS_DIR", str(catalog))
     monkeypatch.setattr(runner.quota, "wait_for_quota", lambda *args, **kwargs: False)
 
-    result = runner.run_single_benchmark(_work_item(tmp_path, get_backend("codex")))
+    result = runner.run_single_benchmark(_work_item(tmp_path, get_backend(backend_name)))
 
     assert result["agent_skills"] == ["alpha-skill", "zeta-skill"]
     assert "indinv_check_prompted" not in result

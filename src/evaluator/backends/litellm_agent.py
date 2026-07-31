@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import time
+from xml.sax.saxutils import escape
 
 # Use LiteLLM's bundled model-cost map instead of fetching it at runtime: the
 # container firewall blocks the remote fetch, and a failed fetch both emits a
@@ -27,6 +28,8 @@ except ImportError:
 # Drop provider-unsupported params (e.g. temperature for gpt-5 reasoning models)
 # rather than raising, so one agent loop works across model families.
 litellm.drop_params = True
+
+PROJECT_SKILLS_DIR = ".agents/skills"
 
 TOOLS = [
     {
@@ -69,6 +72,80 @@ TOOLS = [
         },
     },
 ]
+
+
+def _discover_skills(workspace: str) -> list[dict[str, str]]:
+    """Return valid project-skill metadata in deterministic directory order."""
+
+    skills_root = os.path.join(workspace, PROJECT_SKILLS_DIR)
+    if not os.path.isdir(skills_root):
+        return []
+
+    skills = []
+    with os.scandir(skills_root) as entries:
+        for entry in sorted(entries, key=lambda candidate: candidate.name):
+            skill_file = os.path.join(entry.path, "SKILL.md")
+            if not entry.is_dir() or not os.path.isfile(skill_file):
+                continue
+            try:
+                with open(skill_file, encoding="utf-8") as stream:
+                    lines = stream.read().splitlines()
+            except (OSError, UnicodeError):
+                continue
+            if not lines or lines[0] != "---":
+                continue
+            try:
+                frontmatter_end = lines.index("---", 1)
+            except ValueError:
+                continue
+
+            metadata = {}
+            for line in lines[1:frontmatter_end]:
+                key, separator, value = line.partition(":")
+                if separator:
+                    metadata[key.strip()] = value.strip()
+            name = metadata.get("name", "")
+            description = metadata.get("description", "")
+            if name != entry.name or not description:
+                continue
+            skills.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "path": f"{PROJECT_SKILLS_DIR}/{entry.name}/SKILL.md",
+                }
+            )
+    return skills
+
+
+def _append_skill_catalog(prompt: str, workspace: str) -> str:
+    """Expose skill triggers while leaving full instructions on disk."""
+
+    skills = _discover_skills(workspace)
+    if not skills:
+        return prompt
+
+    catalog = []
+    for skill in skills:
+        catalog.extend(
+            [
+                "  <skill>",
+                f"    <name>{escape(skill['name'])}</name>",
+                f"    <description>{escape(skill['description'])}</description>",
+                f"    <path>{escape(skill['path'])}</path>",
+                "  </skill>",
+            ]
+        )
+    rendered_catalog = "\n".join(catalog)
+    return (
+        f"{prompt}\n\n"
+        "# Agent Skills\n\n"
+        "Project skills are available below. When a description matches the task, use `read_file` to load that "
+        "skill's `SKILL.md` before following its instructions. Load only relevant skills.\n\n"
+        "<available_skills>\n"
+        f"{rendered_catalog}\n"
+        "</available_skills>"
+    )
 
 
 def _token_detail(details: object, *keys: str) -> int | None:
@@ -196,7 +273,7 @@ def main() -> int:
         print(json.dumps({"type": "error", "message": "empty prompt on stdin"}), flush=True)
         sys.exit(1)
 
-    messages = [{"role": "user", "content": prompt}]
+    messages = [{"role": "user", "content": _append_skill_catalog(prompt, args.workspace)}]
     total_in = 0
     total_out = 0
     i = 0

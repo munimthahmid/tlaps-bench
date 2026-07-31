@@ -1121,3 +1121,10 @@ def test_pi_cli_and_kiro_provider_installs_use_latest_releases():
 
     assert "npm install -g --ignore-scripts @earendil-works/pi-coding-agent --cache" in script
     assert "pi install npm:pi-provider-kiro" in script
+
+
+def test_pi_command_approves_runner_generated_workspace_for_project_skills():
+    command = PiBackend(model="openai/gpt-5.5").build_command("/workspace", "/results")
+
+    assert command[:2] == ["bash", "-lc"]
+    assert "pi --mode json --no-session --approve " in command[2]

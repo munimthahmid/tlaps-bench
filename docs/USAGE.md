@@ -62,7 +62,7 @@ uv run tlaps-bench run --backend litellm_oneshot --model claude-sonnet-4-6
 
 ### Agent skills
 
-The benchmark automatically makes the portable skills under `skills/` available to native coding agents in both proof modes. Each backend uses its client's project discovery directory:
+The benchmark automatically makes the portable skills under `skills/` available to supported agentic backends in both proof modes:
 
 | Backend | Project skills directory |
 |---------|--------------------------|
@@ -70,9 +70,10 @@ The benchmark automatically makes the portable skills under `skills/` available 
 | `claude_code` | `.claude/skills` |
 | `cursor` | `.agents/skills` |
 | `copilot` | `.github/skills` |
+| `litellm` | `.agents/skills` |
 | `pi` | `.agents/skills` |
 
-`litellm`, `litellm_oneshot`, and `copilot_oneshot` do not receive skills.
+One-shot backends do not receive skills.
 
 ### OpenAI-compatible endpoints
 
@@ -522,7 +523,7 @@ This script runs inside the container with full network access before the firewa
 |--------|-------------|
 | `name` | String used as the `--backend` CLI value |
 | `install_script` | Filename in `docker/install-scripts/` to run at container start. Set `None` if pre-installed. |
-| `project_skills_dir` | Repository-relative project directory where the client automatically discovers Agent Skills. Leave `None` for unsupported clients. |
+| `project_skills_dir` | Repository-relative project directory where the backend exposes Agent Skills. Leave `None` for unsupported backends. |
 | `env_keys` | List of host environment variables forwarded into the container |
 | `credential_mounts` | List of credential directory names to mount (see below) |
 | `get_credential_mounts()` | Override this for dynamic credential logic |
