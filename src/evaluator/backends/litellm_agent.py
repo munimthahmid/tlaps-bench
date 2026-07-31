@@ -31,8 +31,6 @@ except ImportError:
 # rather than raising, so one agent loop works across model families.
 litellm.drop_params = True
 
-PROJECT_SKILLS_DIR = ".agents/skills"
-
 TOOLS = [
     {
         "type": "function",
@@ -76,21 +74,22 @@ TOOLS = [
 ]
 
 
-def _append_skill_catalog(prompt: str, workspace: str) -> str:
+def _append_skill_catalog(prompt: str, workspace: str, skills_dir: str) -> str:
     """Expose skill triggers while leaving full instructions on disk."""
 
-    skills = discover_agent_skills(os.path.join(workspace, PROJECT_SKILLS_DIR))
+    skills = discover_agent_skills(os.path.join(workspace, skills_dir))
     if not skills:
         return prompt
 
     catalog = []
     for skill in skills:
+        skill_path = os.path.join(skills_dir, skill.name, "SKILL.md")
         catalog.extend(
             [
                 "  <skill>",
                 f"    <name>{escape(skill.name)}</name>",
                 f"    <description>{escape(skill.description)}</description>",
-                f"    <path>{PROJECT_SKILLS_DIR}/{escape(skill.name)}/SKILL.md</path>",
+                f"    <path>{escape(skill_path)}</path>",
                 "  </skill>",
             ]
         )
@@ -221,6 +220,7 @@ def exec_tool(name: str, args: dict, workspace: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", required=True)
+    parser.add_argument("--skills-dir", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--reasoning-effort", default=None)
     parser.add_argument("--max-iterations", type=int, default=0)
@@ -231,7 +231,7 @@ def main() -> int:
         print(json.dumps({"type": "error", "message": "empty prompt on stdin"}), flush=True)
         sys.exit(1)
 
-    messages = [{"role": "user", "content": _append_skill_catalog(prompt, args.workspace)}]
+    messages = [{"role": "user", "content": _append_skill_catalog(prompt, args.workspace, args.skills_dir)}]
     total_in = 0
     total_out = 0
     i = 0

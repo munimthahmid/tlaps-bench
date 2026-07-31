@@ -41,6 +41,8 @@ class LiteLLMBackend(AgenticBackend):
             "/opt/litellm_agent.py",
             "--workspace",
             workspace,
+            "--skills-dir",
+            self.project_skills_dir,
             "--model",
             self.model,
         ]

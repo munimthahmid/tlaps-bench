@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from evaluator.backends.litellm import LiteLLMBackend
+
 litellm_agent = pytest.importorskip(
     "evaluator.backends.litellm_agent",
     reason="litellm is only installed inside the agent container",
@@ -124,7 +126,17 @@ def test_agent_can_finish_a_response_without_usage(monkeypatch, capsys):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["litellm_agent.py", "--workspace", ".", "--model", "unknown/model", "--max-iterations", "1"],
+        [
+            "litellm_agent.py",
+            "--workspace",
+            ".",
+            "--skills-dir",
+            ".agents/skills",
+            "--model",
+            "unknown/model",
+            "--max-iterations",
+            "1",
+        ],
     )
 
     assert litellm_agent.main() == 0
@@ -180,6 +192,8 @@ def test_first_request_lists_skill_metadata_without_eagerly_loading_bodies(monke
             "litellm_agent.py",
             "--workspace",
             str(tmp_path),
+            "--skills-dir",
+            ".agents/skills",
             "--model",
             "unknown/model",
             "--max-iterations",
@@ -206,6 +220,15 @@ def test_first_request_lists_skill_metadata_without_eagerly_loading_bodies(monke
         )
         == alpha.read_text()
     )
+
+
+def test_backend_passes_its_project_skills_directory_to_agent():
+    backend = LiteLLMBackend(model="unknown/model")
+
+    command = backend.build_command("/workspace", "/results")
+
+    skills_option = command.index("--skills-dir")
+    assert command[skills_option + 1] == backend.project_skills_dir
 
 
 def test_request_usage_is_flushed_immediately(monkeypatch):

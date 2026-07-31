@@ -169,7 +169,7 @@ def test_checked_in_skills_have_portable_metadata_and_guidance():
         (
             "duplicate-name",
             "---\nname: duplicate-name\nname: duplicate-name\ndescription: Use when testing.\n---\n\nInstructions.\n",
-            "duplicate name",
+            "invalid YAML frontmatter",
         ),
         (
             "wrong-directory",
@@ -187,9 +187,19 @@ def test_checked_in_skills_have_portable_metadata_and_guidance():
             "has no instructions",
         ),
         (
-            "block-description",
-            "---\nname: block-description\ndescription: >\n  Use when testing.\n---\n\nInstructions.\n",
-            "must use a one-line string",
+            "invalid-yaml",
+            "---\nname: invalid-yaml\ndescription: [unterminated\n---\n\nInstructions.\n",
+            "invalid YAML frontmatter",
+        ),
+        (
+            "non-string-name",
+            "---\nname: [testing]\ndescription: Use when testing.\n---\n\nInstructions.\n",
+            "name must be a string",
+        ),
+        (
+            "non-string-description",
+            "---\nname: non-string-description\ndescription: [testing]\n---\n\nInstructions.\n",
+            "description must be a string",
         ),
     ],
 )
@@ -220,10 +230,69 @@ def test_shared_discovery_parses_quoted_metadata_and_ignores_non_skills(tmp_path
     assert skill.source_dir == skill_dir
 
 
+def test_shared_discovery_accepts_yaml_block_descriptions(tmp_path):
+    skill_dir = tmp_path / "block-description"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: block-description\n"
+        "description: >\n"
+        "  Validates candidate invariants.\n"
+        "  Use when developing a safety proof.\n"
+        "metadata:\n"
+        "  author: benchmark\n"
+        "---\n\n"
+        "Instructions.\n"
+    )
+
+    skill = discover_agent_skills(tmp_path)[0]
+
+    assert skill.description == "Validates candidate invariants. Use when developing a safety proof."
+
+
+def test_shared_discovery_accepts_spec_length_boundaries(tmp_path):
+    name = "a" * 64
+    description = "d" * 1024
+    skill_dir = tmp_path / name
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {description}\n---\n\nInstructions.\n")
+
+    skill = discover_agent_skills(tmp_path)[0]
+
+    assert skill.name == name
+    assert skill.description == description
+
+
+@pytest.mark.parametrize(
+    ("name", "description", "error"),
+    [
+        ("a" * 65, "Valid description.", "name must be 1-64 characters"),
+        ("valid-name", "d" * 1025, "description must be 1-1024 characters"),
+        ("valid-name", "   ", "description must be 1-1024 characters"),
+    ],
+)
+def test_shared_discovery_rejects_metadata_outside_spec_length_limits(tmp_path, name, description, error):
+    skill_dir = tmp_path / name
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(f'---\nname: {name}\ndescription: "{description}"\n---\n\nInstructions.\n')
+
+    with pytest.raises(ValueError, match=error):
+        discover_agent_skills(tmp_path)
+
+
 def test_litellm_container_receives_shared_skill_parser():
     dockerfile = Path("docker/base.Dockerfile").read_text()
+    installer = Path("docker/install-scripts/install-litellm.sh").read_text()
 
     assert "COPY src/evaluator/__init__.py src/evaluator/agent_skills.py /opt/evaluator/" in dockerfile
+    assert "litellm pyyaml" in installer
+
+
+def test_ci_requires_real_pi_skill_discovery():
+    workflow = Path(".github/workflows/ci.yml").read_text()
+
+    assert "bash docker/install-scripts/install-pi.sh" in workflow
+    assert 'TLAPS_BENCH_REQUIRE_PI_CLI: "1"' in workflow
 
 
 @pytest.mark.parametrize(("backend_name", "project_skills_dir"), SUPPORTED_BACKENDS)

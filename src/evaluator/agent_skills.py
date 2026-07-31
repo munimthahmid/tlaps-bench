@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 _SKILL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _REQUIRED_FIELDS = ("name", "description")
+_MAX_NAME_LENGTH = 64
+_MAX_DESCRIPTION_LENGTH = 1024
 
 
 @dataclass(frozen=True)
@@ -20,85 +23,80 @@ class AgentSkill:
     source_dir: Path
 
 
-def _yaml_scalar(raw_value: str, skill_file: Path, field: str) -> str:
-    """Parse the one-line YAML string forms used by Agent Skill metadata."""
+class _UniqueKeyScalarLoader(yaml.BaseLoader):
+    """Scalar-preserving YAML loader that rejects duplicate mapping keys."""
 
-    value = raw_value.lstrip()
-    if not value or value.startswith("#"):
-        raise ValueError(f"empty {field} in Agent Skill metadata: {skill_file}")
-    if re.fullmatch(r"[>|][+-]?\d*(?:\s+#.*)?", value):
-        raise ValueError(f"{field} must use a one-line string in Agent Skill metadata: {skill_file}")
 
-    if value.startswith('"'):
+def _construct_unique_mapping(loader: yaml.BaseLoader, node: yaml.MappingNode, deep: bool = False) -> dict:
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
         try:
-            parsed, end = json.JSONDecoder().raw_decode(value)
-        except (json.JSONDecodeError, TypeError) as exc:
-            raise ValueError(f"invalid quoted {field} in Agent Skill metadata: {skill_file}") from exc
-        if not isinstance(parsed, str):
-            raise ValueError(f"{field} must be a string in Agent Skill metadata: {skill_file}")
-        remainder = value[end:]
-    elif value.startswith("'"):
-        characters: list[str] = []
-        position = 1
-        while position < len(value):
-            if value[position] != "'":
-                characters.append(value[position])
-                position += 1
-            elif position + 1 < len(value) and value[position + 1] == "'":
-                characters.append("'")
-                position += 2
-            else:
-                position += 1
-                break
-        else:
-            raise ValueError(f"invalid quoted {field} in Agent Skill metadata: {skill_file}")
-        parsed = "".join(characters)
-        remainder = value[position:]
-    else:
-        comment = re.search(r"\s+#", value)
-        if comment:
-            parsed = value[: comment.start()].rstrip()
-            remainder = value[comment.start() :]
-        else:
-            parsed = value.rstrip()
-            remainder = ""
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
 
-    if remainder.strip() and re.fullmatch(r"\s+#.*", remainder) is None:
-        raise ValueError(f"invalid trailing content in {field} metadata: {skill_file}")
-    if not parsed:
-        raise ValueError(f"empty {field} in Agent Skill metadata: {skill_file}")
-    return parsed
+
+_UniqueKeyScalarLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
 
 
 def _skill_metadata(skill_file: Path) -> tuple[str, str]:
     lines = skill_file.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0].strip() != "---":
+    if not lines or lines[0] != "---":
         raise ValueError(f"SKILL.md is missing YAML frontmatter: {skill_file}")
 
-    fields: dict[str, str] = {}
     frontmatter_end: int | None = None
     for index, line in enumerate(lines[1:], start=1):
-        if line.strip() == "---":
+        if line == "---":
             frontmatter_end = index
             break
-        if not line or line[0].isspace():
-            continue
-        key, separator, raw_value = line.partition(":")
-        key = key.strip()
-        if not separator or key not in _REQUIRED_FIELDS:
-            continue
-        if key in fields:
-            raise ValueError(f"duplicate {key} in Agent Skill metadata: {skill_file}")
-        fields[key] = _yaml_scalar(raw_value, skill_file, key)
 
     if frontmatter_end is None:
         raise ValueError(f"SKILL.md has unclosed YAML frontmatter: {skill_file}")
-    missing = [field for field in _REQUIRED_FIELDS if field not in fields]
+    try:
+        metadata = yaml.load(
+            "\n".join(lines[1:frontmatter_end]),
+            Loader=_UniqueKeyScalarLoader,
+        )
+    except yaml.YAMLError as exc:
+        raise ValueError(f"SKILL.md has invalid YAML frontmatter: {skill_file}") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError(f"SKILL.md frontmatter must be a YAML mapping: {skill_file}")
+
+    missing = [field for field in _REQUIRED_FIELDS if field not in metadata]
     if missing:
         raise ValueError(f"SKILL.md is missing required metadata {', '.join(missing)}: {skill_file}")
+    name = metadata["name"]
+    description = metadata["description"]
+    if not isinstance(name, str):
+        raise ValueError(f"Agent Skill name must be a string: {skill_file}")
+    if not isinstance(description, str):
+        raise ValueError(f"Agent Skill description must be a string: {skill_file}")
+    description = description.strip()
+    if not 1 <= len(name) <= _MAX_NAME_LENGTH:
+        raise ValueError(f"Agent Skill name must be 1-{_MAX_NAME_LENGTH} characters: {skill_file}")
+    if not 1 <= len(description) <= _MAX_DESCRIPTION_LENGTH:
+        raise ValueError(f"Agent Skill description must be 1-{_MAX_DESCRIPTION_LENGTH} characters: {skill_file}")
     if not any(line.strip() for line in lines[frontmatter_end + 1 :]):
         raise ValueError(f"SKILL.md has no instructions: {skill_file}")
-    return fields["name"], fields["description"]
+    return name, description
 
 
 def discover_agent_skills(root: str | Path) -> list[AgentSkill]:
