@@ -13,6 +13,8 @@ import sys
 import time
 from xml.sax.saxutils import escape
 
+from evaluator.agent_skills import discover_agent_skills
+
 # Use LiteLLM's bundled model-cost map instead of fetching it at runtime: the
 # container firewall blocks the remote fetch, and a failed fetch both emits a
 # warning the runner misreads as a transient infra failure and changes provider
@@ -74,54 +76,10 @@ TOOLS = [
 ]
 
 
-def _discover_skills(workspace: str) -> list[dict[str, str]]:
-    """Return valid project-skill metadata in deterministic directory order."""
-
-    skills_root = os.path.join(workspace, PROJECT_SKILLS_DIR)
-    if not os.path.isdir(skills_root):
-        return []
-
-    skills = []
-    with os.scandir(skills_root) as entries:
-        for entry in sorted(entries, key=lambda candidate: candidate.name):
-            skill_file = os.path.join(entry.path, "SKILL.md")
-            if not entry.is_dir() or not os.path.isfile(skill_file):
-                continue
-            try:
-                with open(skill_file, encoding="utf-8") as stream:
-                    lines = stream.read().splitlines()
-            except (OSError, UnicodeError):
-                continue
-            if not lines or lines[0] != "---":
-                continue
-            try:
-                frontmatter_end = lines.index("---", 1)
-            except ValueError:
-                continue
-
-            metadata = {}
-            for line in lines[1:frontmatter_end]:
-                key, separator, value = line.partition(":")
-                if separator:
-                    metadata[key.strip()] = value.strip()
-            name = metadata.get("name", "")
-            description = metadata.get("description", "")
-            if name != entry.name or not description:
-                continue
-            skills.append(
-                {
-                    "name": name,
-                    "description": description,
-                    "path": f"{PROJECT_SKILLS_DIR}/{entry.name}/SKILL.md",
-                }
-            )
-    return skills
-
-
 def _append_skill_catalog(prompt: str, workspace: str) -> str:
     """Expose skill triggers while leaving full instructions on disk."""
 
-    skills = _discover_skills(workspace)
+    skills = discover_agent_skills(os.path.join(workspace, PROJECT_SKILLS_DIR))
     if not skills:
         return prompt
 
@@ -130,9 +88,9 @@ def _append_skill_catalog(prompt: str, workspace: str) -> str:
         catalog.extend(
             [
                 "  <skill>",
-                f"    <name>{escape(skill['name'])}</name>",
-                f"    <description>{escape(skill['description'])}</description>",
-                f"    <path>{escape(skill['path'])}</path>",
+                f"    <name>{escape(skill.name)}</name>",
+                f"    <description>{escape(skill.description)}</description>",
+                f"    <path>{PROJECT_SKILLS_DIR}/{escape(skill.name)}/SKILL.md</path>",
                 "  </skill>",
             ]
         )

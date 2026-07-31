@@ -44,6 +44,7 @@ from common.container import (
 )
 from common.task_contract import TaskContractError
 from evaluator import quota
+from evaluator.agent_skills import discover_agent_skills
 from evaluator.backends import get_backend, list_backends
 from evaluator.backends.base import Backend, SubmissionDisposition
 from evaluator.cost import calculate_equivalent_cost_usd, public_price_error
@@ -501,20 +502,6 @@ def _write_bytes(path: str, content: bytes) -> None:
         stream.write(content)
 
 
-def _discover_skill_dirs(skills_dir: str) -> list[str]:
-    """Return direct child skill directories in deterministic name order."""
-
-    if not os.path.isdir(skills_dir):
-        return []
-    with os.scandir(skills_dir) as entries:
-        ordered_entries = sorted(entries, key=lambda entry: entry.name)
-        return [
-            entry.path
-            for entry in ordered_entries
-            if entry.is_dir() and os.path.isfile(os.path.join(entry.path, "SKILL.md"))
-        ]
-
-
 def _snapshot_agent_skills(backend: Backend, destination: str) -> list[str]:
     """Capture the catalog this backend can discover and return its skill names."""
 
@@ -522,12 +509,10 @@ def _snapshot_agent_skills(backend: Backend, destination: str) -> list[str]:
     if backend.project_skills_dir is None:
         return []
 
-    skill_names = []
-    for source in _discover_skill_dirs(SKILLS_DIR):
-        name = os.path.basename(source)
-        shutil.copytree(source, os.path.join(destination, name))
-        skill_names.append(name)
-    return skill_names
+    skills = discover_agent_skills(SKILLS_DIR)
+    for skill in skills:
+        shutil.copytree(skill.source_dir, os.path.join(destination, skill.name))
+    return [skill.name for skill in skills]
 
 
 def _copy_skills_to_workspace(skills_snapshot_dir: str, workspace: str, project_skills_dir: str) -> None:

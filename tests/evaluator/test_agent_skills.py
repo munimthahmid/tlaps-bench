@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from evaluator import runner
+from evaluator.agent_skills import discover_agent_skills
 from evaluator.backends import get_backend
 from evaluator.backends.agentic import AgenticBackend
 from evaluator.modes.proof_from_scratch import ProofFromScratch
@@ -111,15 +112,16 @@ def _work_item(tmp_path: Path, backend) -> runner.WorkItem:
 
 def test_checked_in_skills_have_portable_metadata_and_guidance():
     skills_root = Path(runner.SKILLS_DIR)
-    discovered = [Path(path) for path in runner._discover_skill_dirs(str(skills_root))]
+    discovered = discover_agent_skills(skills_root)
 
-    assert [path.name for path in discovered] == sorted(EXPECTED_SKILLS)
-    for skill_dir in discovered:
-        skill_file = skill_dir / "SKILL.md"
+    assert [skill.name for skill in discovered] == sorted(EXPECTED_SKILLS)
+    for skill in discovered:
+        skill_file = skill.source_dir / "SKILL.md"
         metadata, body = _parse_frontmatter(skill_file)
         assert set(metadata) == {"name", "description"}
-        assert metadata["name"] == skill_dir.name
-        assert "Use when" in metadata["description"]
+        assert metadata["name"] == skill.name == skill.source_dir.name
+        assert metadata["description"] == skill.description
+        assert "Use when" in skill.description
         assert body.strip()
 
     invariant = (skills_root / "tla-inductive-invariant-validation" / "SKILL.md").read_text()
@@ -143,6 +145,85 @@ def test_checked_in_skills_have_portable_metadata_and_guidance():
     assert "THEOREM Bridge" in hints
     assert "tlaplus/tlapm#279" in hints
     assert not (Path(runner.REPO_ROOT) / "docs" / "hints" / "tlaps-proof-hints.md").exists()
+
+
+@pytest.mark.parametrize(
+    ("directory", "source", "error"),
+    [
+        ("missing-frontmatter", "# Instructions\n", "missing YAML frontmatter"),
+        (
+            "unclosed-frontmatter",
+            "---\nname: unclosed-frontmatter\ndescription: Use when testing.\n",
+            "unclosed YAML frontmatter",
+        ),
+        (
+            "missing-name",
+            "---\ndescription: Use when testing.\n---\n\nInstructions.\n",
+            "missing required metadata name",
+        ),
+        (
+            "missing-description",
+            "---\nname: missing-description\n---\n\nInstructions.\n",
+            "missing required metadata description",
+        ),
+        (
+            "duplicate-name",
+            "---\nname: duplicate-name\nname: duplicate-name\ndescription: Use when testing.\n---\n\nInstructions.\n",
+            "duplicate name",
+        ),
+        (
+            "wrong-directory",
+            "---\nname: another-name\ndescription: Use when testing.\n---\n\nInstructions.\n",
+            "must match directory",
+        ),
+        (
+            "invalid_name",
+            "---\nname: invalid_name\ndescription: Use when testing.\n---\n\nInstructions.\n",
+            "invalid Agent Skill name",
+        ),
+        (
+            "empty-body",
+            "---\nname: empty-body\ndescription: Use when testing.\n---\n",
+            "has no instructions",
+        ),
+        (
+            "block-description",
+            "---\nname: block-description\ndescription: >\n  Use when testing.\n---\n\nInstructions.\n",
+            "must use a one-line string",
+        ),
+    ],
+)
+def test_shared_discovery_rejects_invalid_skill_metadata(tmp_path, directory, source, error):
+    skill_dir = tmp_path / directory
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(source)
+
+    with pytest.raises(ValueError, match=error):
+        discover_agent_skills(tmp_path)
+
+
+def test_shared_discovery_parses_quoted_metadata_and_ignores_non_skills(tmp_path):
+    skill_dir = tmp_path / "quoted-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: \"quoted-skill\"\ndescription: 'Use when it''s relevant.' # trigger\n---\n\nInstructions.\n"
+    )
+    ignored = tmp_path / "not-a-skill"
+    ignored.mkdir()
+    (ignored / "README.md").write_text("Ignored.")
+
+    skills = discover_agent_skills(tmp_path)
+    assert len(skills) == 1
+    skill = skills[0]
+    assert skill.name == "quoted-skill"
+    assert skill.description == "Use when it's relevant."
+    assert skill.source_dir == skill_dir
+
+
+def test_litellm_container_receives_shared_skill_parser():
+    dockerfile = Path("docker/base.Dockerfile").read_text()
+
+    assert "COPY src/evaluator/__init__.py src/evaluator/agent_skills.py /opt/evaluator/" in dockerfile
 
 
 @pytest.mark.parametrize(("backend_name", "project_skills_dir"), SUPPORTED_BACKENDS)
