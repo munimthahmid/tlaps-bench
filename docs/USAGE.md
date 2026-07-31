@@ -72,11 +72,7 @@ The benchmark automatically makes the portable skills under `skills/` available 
 | `copilot` | `.github/skills` |
 | `pi` | `.agents/skills` |
 
-`litellm`, `litellm_oneshot`, and `copilot_oneshot` do not receive skills. Their results record `agent_skills: []`.
-
-For each benchmark, the runner snapshots the applicable catalog once under `input/skills/` and copies that snapshot into every fresh workspace before the initial Git commit. Infrastructure retries therefore receive the same immutable skill bytes and start from a clean Git state; continuations retain the skills already present in their workspace.
-
-Every result includes `agent_skills`, a sorted list of the skill names made discoverable to that backend. This field records availability, not whether the client loaded or invoked a skill.
+`litellm`, `litellm_oneshot`, and `copilot_oneshot` do not receive skills.
 
 ### OpenAI-compatible endpoints
 
