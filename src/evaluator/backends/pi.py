@@ -735,6 +735,7 @@ class PiBackend(AgenticBackend):
     requires_public_pricing = True
     install_script = "install-pi.sh"
     session_state_dir = "/root/.pi"
+    project_skills_dir = ".agents/skills"
     env_keys = [
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_OAUTH_TOKEN",
