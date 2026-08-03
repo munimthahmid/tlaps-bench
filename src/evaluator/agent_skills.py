@@ -23,11 +23,11 @@ class AgentSkill:
     source_dir: Path
 
 
-class _UniqueKeyScalarLoader(yaml.BaseLoader):
-    """Scalar-preserving YAML loader that rejects duplicate mapping keys."""
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that preserves scalar types and rejects duplicate mapping keys."""
 
 
-def _construct_unique_mapping(loader: yaml.BaseLoader, node: yaml.MappingNode, deep: bool = False) -> dict:
+def _construct_unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False) -> dict:
     mapping = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
@@ -51,7 +51,7 @@ def _construct_unique_mapping(loader: yaml.BaseLoader, node: yaml.MappingNode, d
     return mapping
 
 
-_UniqueKeyScalarLoader.add_constructor(
+_UniqueKeySafeLoader.add_constructor(
     yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
     _construct_unique_mapping,
 )
@@ -73,7 +73,7 @@ def _skill_metadata(skill_file: Path) -> tuple[str, str]:
     try:
         metadata = yaml.load(
             "\n".join(lines[1:frontmatter_end]),
-            Loader=_UniqueKeyScalarLoader,
+            Loader=_UniqueKeySafeLoader,
         )
     except yaml.YAMLError as exc:
         raise ValueError(f"SKILL.md has invalid YAML frontmatter: {skill_file}") from exc

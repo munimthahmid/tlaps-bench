@@ -27,7 +27,7 @@ def _installed_pi() -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     help_text = f"{result.stdout}\n{result.stderr}"
-    required_flags = ("--mode", "--offline", "--approve")
+    required_flags = ("--mode", "--offline", "--approve", "--no-approve", "--skill")
     return binary if result.returncode == 0 and all(flag in help_text for flag in required_flags) else None
 
 
@@ -42,9 +42,22 @@ def _write_skill(workspace: Path, name: str) -> None:
     )
 
 
-def _project_skill_commands(binary: str, workspace: Path, *, approve: bool) -> list[str]:
-    home = workspace.parent / ("approved-home" if approve else "unapproved-home")
-    agent_dir = workspace.parent / ("approved-pi-agent" if approve else "unapproved-pi-agent")
+def _write_project_extension(workspace: Path) -> None:
+    extension_dir = workspace / ".pi" / "extensions"
+    extension_dir.mkdir(parents=True)
+    (extension_dir / "project-extension.ts").write_text(
+        "export default function (pi: any) {\n"
+        '  pi.registerCommand("project-extension", {\n'
+        '    description: "Project extension loaded",\n'
+        "    handler: async () => {},\n"
+        "  });\n"
+        "}\n"
+    )
+
+
+def _project_commands(binary: str, workspace: Path, profile: str, *resource_options: str) -> dict[str, str]:
+    home = workspace.parent / f"{profile}-home"
+    agent_dir = workspace.parent / f"{profile}-pi-agent"
     home.mkdir()
     agent_dir.mkdir()
     env = {
@@ -59,9 +72,8 @@ def _project_skill_commands(binary: str, workspace: Path, *, approve: bool) -> l
             "rpc",
             "--offline",
             "--no-session",
-            "--no-extensions",
             "--no-context-files",
-            "--approve" if approve else "--no-approve",
+            *resource_options,
         ],
         input='{"type":"get_commands"}\n',
         capture_output=True,
@@ -73,23 +85,35 @@ def _project_skill_commands(binary: str, workspace: Path, *, approve: bool) -> l
     assert result.returncode == 0, result.stderr or result.stdout
     responses = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
     response = next(event for event in responses if event.get("command") == "get_commands")
-    return sorted(command["name"] for command in response["data"]["commands"] if command.get("source") == "skill")
+    return {command["name"]: command["source"] for command in response["data"]["commands"]}
 
 
 @pytest.mark.skipif(
     PI_BINARY is None and not REQUIRE_PI_CLI,
     reason="installed Pi CLI lacks the current offline RPC interface",
 )
-def test_real_pi_cli_requires_approval_to_discover_project_skills(tmp_path):
+def test_real_pi_cli_loads_explicit_skills_without_trusting_project_extensions(tmp_path):
     binary = PI_BINARY
     assert binary is not None, "Pi CLI is required"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     _write_skill(workspace, "zeta-skill")
     _write_skill(workspace, "alpha-skill")
+    _write_project_extension(workspace)
 
-    assert _project_skill_commands(binary, workspace, approve=False) == []
-    assert _project_skill_commands(binary, workspace, approve=True) == [
-        "skill:alpha-skill",
-        "skill:zeta-skill",
-    ]
+    approved = _project_commands(binary, workspace, "approved", "--approve")
+    assert approved["skill:alpha-skill"] == "skill"
+    assert approved["skill:zeta-skill"] == "skill"
+    assert approved["project-extension"] == "extension"
+
+    restricted = _project_commands(
+        binary,
+        workspace,
+        "restricted",
+        "--no-approve",
+        "--skill",
+        ".agents/skills",
+    )
+    assert restricted["skill:alpha-skill"] == "skill"
+    assert restricted["skill:zeta-skill"] == "skill"
+    assert "project-extension" not in restricted

@@ -63,6 +63,9 @@ Match every re-declared name exactly so implicit `INSTANCE` substitution binds i
 Define `IndInv` in the wrapper. Fix finite constants in `APTarget.cfg`, for example:
 
 ```tla
+INIT Init
+NEXT Next
+
 CONSTANT N = 5
 ```
 

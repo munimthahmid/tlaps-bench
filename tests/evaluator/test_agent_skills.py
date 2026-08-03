@@ -129,6 +129,7 @@ def test_checked_in_skills_have_portable_metadata_and_guidance():
         "--init=Init --inv=IndInv --length=0",
         "--init=IndInv --inv=IndInv --length=1",
         "--init=IndInv --inv=Safety --length=0",
+        "INIT Init\nNEXT Next\n\nCONSTANT N = 5",
         r"TypeOK /\ H",
         "violation1.tla",
         r"\* @type:",
@@ -201,6 +202,36 @@ def test_checked_in_skills_have_portable_metadata_and_guidance():
             "---\nname: non-string-description\ndescription: [testing]\n---\n\nInstructions.\n",
             "description must be a string",
         ),
+        (
+            "boolean-name",
+            "---\nname: true\ndescription: Use when testing.\n---\n\nInstructions.\n",
+            "name must be a string",
+        ),
+        (
+            "numeric-name",
+            "---\nname: 123\ndescription: Use when testing.\n---\n\nInstructions.\n",
+            "name must be a string",
+        ),
+        (
+            "null-name",
+            "---\nname: null\ndescription: Use when testing.\n---\n\nInstructions.\n",
+            "name must be a string",
+        ),
+        (
+            "boolean-description",
+            "---\nname: boolean-description\ndescription: true\n---\n\nInstructions.\n",
+            "description must be a string",
+        ),
+        (
+            "numeric-description",
+            "---\nname: numeric-description\ndescription: 123\n---\n\nInstructions.\n",
+            "description must be a string",
+        ),
+        (
+            "null-description",
+            "---\nname: null-description\ndescription: null\n---\n\nInstructions.\n",
+            "description must be a string",
+        ),
     ],
 )
 def test_shared_discovery_rejects_invalid_skill_metadata(tmp_path, directory, source, error):
@@ -228,6 +259,17 @@ def test_shared_discovery_parses_quoted_metadata_and_ignores_non_skills(tmp_path
     assert skill.name == "quoted-skill"
     assert skill.description == "Use when it's relevant."
     assert skill.source_dir == skill_dir
+
+
+def test_shared_discovery_accepts_quoted_yaml_lookalike_scalars(tmp_path):
+    skill_dir = tmp_path / "true"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text('---\nname: "true"\ndescription: "123"\n---\n\nInstructions.\n')
+
+    skill = discover_agent_skills(tmp_path)[0]
+
+    assert skill.name == "true"
+    assert skill.description == "123"
 
 
 def test_shared_discovery_accepts_yaml_block_descriptions(tmp_path):
