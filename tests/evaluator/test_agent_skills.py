@@ -228,6 +228,21 @@ def test_checked_in_skills_have_portable_metadata_and_guidance():
             "description must be a string",
         ),
         (
+            "exponent-description",
+            "---\nname: exponent-description\ndescription: 1e3\n---\n\nInstructions.\n",
+            "description must be a string",
+        ),
+        (
+            "leading-zero-description",
+            "---\nname: leading-zero-description\ndescription: 08\n---\n\nInstructions.\n",
+            "description must be a string",
+        ),
+        (
+            "octal-description",
+            "---\nname: octal-description\ndescription: 0o17\n---\n\nInstructions.\n",
+            "description must be a string",
+        ),
+        (
             "null-description",
             "---\nname: null-description\ndescription: null\n---\n\nInstructions.\n",
             "description must be a string",
@@ -261,15 +276,31 @@ def test_shared_discovery_parses_quoted_metadata_and_ignores_non_skills(tmp_path
     assert skill.source_dir == skill_dir
 
 
-def test_shared_discovery_accepts_quoted_yaml_lookalike_scalars(tmp_path):
+@pytest.mark.parametrize("description", ("123", "1e3", "08", "0o17"))
+def test_shared_discovery_accepts_quoted_yaml_lookalike_scalars(tmp_path, description):
     skill_dir = tmp_path / "true"
     skill_dir.mkdir()
-    (skill_dir / "SKILL.md").write_text('---\nname: "true"\ndescription: "123"\n---\n\nInstructions.\n')
+    (skill_dir / "SKILL.md").write_text(f'---\nname: "true"\ndescription: "{description}"\n---\n\nInstructions.\n')
 
     skill = discover_agent_skills(tmp_path)[0]
 
     assert skill.name == "true"
-    assert skill.description == "123"
+    assert skill.description == description
+
+
+@pytest.mark.parametrize(
+    ("name", "description"),
+    (("on", "2026-08-04"), ("off", "="), ("yes", "<<"), ("no", "no")),
+)
+def test_shared_discovery_uses_yaml12_string_resolution(tmp_path, name, description):
+    skill_dir = tmp_path / name
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {description}\n---\n\nInstructions.\n")
+
+    skill = discover_agent_skills(tmp_path)[0]
+
+    assert skill.name == name
+    assert skill.description == description
 
 
 def test_shared_discovery_accepts_yaml_block_descriptions(tmp_path):

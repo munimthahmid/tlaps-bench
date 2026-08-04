@@ -13,6 +13,19 @@ _REQUIRED_FIELDS = ("name", "description")
 _MAX_NAME_LENGTH = 64
 _MAX_DESCRIPTION_LENGTH = 1024
 
+_YAML_BOOL_TAG = "tag:yaml.org,2002:bool"
+_YAML_FLOAT_TAG = "tag:yaml.org,2002:float"
+_YAML_INT_TAG = "tag:yaml.org,2002:int"
+_YAML_MERGE_TAG = "tag:yaml.org,2002:merge"
+_YAML_TIMESTAMP_TAG = "tag:yaml.org,2002:timestamp"
+_YAML_VALUE_TAG = "tag:yaml.org,2002:value"
+_YAML12_BOOL = re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$")
+_YAML12_INT = re.compile(r"^(?:[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+)$")
+_YAML12_FLOAT = re.compile(
+    r"^(?:[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?"
+    r"|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$"
+)
+
 
 @dataclass(frozen=True)
 class AgentSkill:
@@ -24,7 +37,18 @@ class AgentSkill:
 
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
-    """Safe YAML loader that preserves scalar types and rejects duplicate mapping keys."""
+    """YAML 1.2 core loader that rejects duplicate mapping keys."""
+
+
+def _construct_yaml12_int(loader: yaml.SafeLoader, node: yaml.ScalarNode) -> int:
+    value = loader.construct_scalar(node).replace("_", "")
+    sign = -1 if value.startswith("-") else 1
+    if value.startswith(("+", "-")):
+        value = value[1:]
+    for prefix, base in (("0b", 2), ("0o", 8), ("0x", 16)):
+        if value.startswith(prefix):
+            return sign * int(value[2:], base)
+    return sign * int(value, 10)
 
 
 def _construct_unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False) -> dict:
@@ -51,6 +75,22 @@ def _construct_unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, d
     return mapping
 
 
+_REPLACED_YAML11_TAGS = {
+    _YAML_BOOL_TAG,
+    _YAML_FLOAT_TAG,
+    _YAML_INT_TAG,
+    _YAML_MERGE_TAG,
+    _YAML_TIMESTAMP_TAG,
+    _YAML_VALUE_TAG,
+}
+_UniqueKeySafeLoader.yaml_implicit_resolvers = {
+    first: [(tag, pattern) for tag, pattern in resolvers if tag not in _REPLACED_YAML11_TAGS]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_UniqueKeySafeLoader.add_implicit_resolver(_YAML_BOOL_TAG, _YAML12_BOOL, list("tTfF"))
+_UniqueKeySafeLoader.add_implicit_resolver(_YAML_INT_TAG, _YAML12_INT, list("-+0123456789"))
+_UniqueKeySafeLoader.add_implicit_resolver(_YAML_FLOAT_TAG, _YAML12_FLOAT, list("-+0123456789."))
+_UniqueKeySafeLoader.add_constructor(_YAML_INT_TAG, _construct_yaml12_int)
 _UniqueKeySafeLoader.add_constructor(
     yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
     _construct_unique_mapping,
