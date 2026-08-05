@@ -1763,17 +1763,33 @@ def layered_sany_gate(output_root, manifest, audit_writer, jobs=16):
     return sorted(failures)
 
 
-def layered_triviality_gate(output_root, manifest, audit_writer, jobs=16, timeout=120):
+def layered_triviality_gate(output_root, manifest, audit_writer, jobs=16, timeout=120, retry_timeout=None):
     """Drop tasks whose `PROOF OBVIOUS` placeholder already verifies.
 
     Such a task is worthless: an empty submission PASSes grading. Checked with
     the task's exact context so the verdict matches what the grader will do.
-    Returns the dropped task keys; the caller sweeps orphaned context files.
+
+    A timeout is not a verdict, so every timed-out task is re-checked once on the
+    grader's own (larger) budget, un-confounded by the 16-wide load here. After
+    the re-check a task is dropped if its placeholder verifies; kept if it
+    reaches a real "does not verify" (a no-op cannot PASS grading either); or
+    reported as errored if the gate still cannot judge it (a second timeout or an
+    unresolved module), so the caller leaves the dataset unchanged.
+
+    Returns `(dropped, slow, errored)`.
     """
     import tempfile
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    from dataset.triviality_audit import check_task, find_tlapm, find_tlapm_lib
+    from common.check_proof import resolve_timeout
+    from dataset.triviality_audit import (
+        check_task,
+        find_tlapm,
+        find_tlapm_lib,
+        is_indeterminate,
+        is_missing_module,
+    )
+    from tlacore.tlapm.locate import find_community_lib
 
     # A degenerate task PASSes with an empty submission, so skipping this check
     # silently would ship one. `--skip-gates` is the deliberate opt-out.
@@ -1784,21 +1800,77 @@ def layered_triviality_gate(output_root, manifest, audit_writer, jobs=16, timeou
     if not tlapm_lib:
         raise RuntimeError("tlapm lib not found — cannot run the layered triviality gate (pass --skip-gates to bypass)")
 
+    # Give tlapm the same Community Modules the grader supplies; the throwaway
+    # check dir is outside the repo, so resolve it once here.
+    community_lib = find_community_lib()
+
+    # Re-check on the grader's deadline: "does not verify within the budget
+    # grading allows" is exactly "a no-op submission cannot PASS".
+    retry_timeout = retry_timeout or max(timeout, resolve_timeout(None))
+
     def check(item):
         task_key, entry = item
         with tempfile.TemporaryDirectory(prefix="layered_triv_") as tmp:
             path = _materialize_task(output_root, task_key, entry["context"], tmp)
-            degenerate, detail = check_task(path, tlapm_path, tlapm_lib, timeout)
-            return task_key, degenerate, detail
+            return task_key, check_task(path, tlapm_path, tlapm_lib, timeout, community_lib=community_lib)
 
-    flagged = []
+    flagged, timed_out, errored = [], [], []
     with ThreadPoolExecutor(max_workers=jobs) as ex:
         futs = [ex.submit(check, it) for it in manifest.items()]
         for fut in as_completed(futs):
-            task_key, degenerate, detail = fut.result()
+            task_key, (degenerate, detail) = fut.result()
             if degenerate:
                 flagged.append(task_key)
                 audit_writer.write(f"[audit] {task_key}: degenerate (placeholder verifies) — dropped — {detail}\n")
+            elif is_missing_module(detail):
+                errored.append(task_key)
+                audit_writer.write(
+                    f"[audit] {task_key}: could not judge — {detail}; supply the module the grader uses\n"
+                )
+            elif is_indeterminate(detail):
+                timed_out.append(task_key)
+
+    slow = []
+    if timed_out:
+        print(
+            f"[layered-triviality-gate] re-checking {len(timed_out)} timed-out task(s) "
+            f"on the grader's {retry_timeout}s budget"
+        )
+
+        def recheck(task_key):
+            with tempfile.TemporaryDirectory(prefix="layered_triv_retry_") as tmp:
+                path = _materialize_task(output_root, task_key, manifest[task_key]["context"], tmp)
+                return task_key, check_task(path, tlapm_path, tlapm_lib, retry_timeout, community_lib=community_lib)
+
+        with ThreadPoolExecutor(max_workers=jobs) as ex:
+            futs = [ex.submit(recheck, key) for key in sorted(timed_out)]
+            for fut in as_completed(futs):
+                task_key, (degenerate, detail) = fut.result()
+                if degenerate:
+                    flagged.append(task_key)
+                    audit_writer.write(
+                        f"[audit] {task_key}: degenerate (placeholder verifies on the re-check) — dropped — {detail}\n"
+                    )
+                elif is_missing_module(detail):
+                    errored.append(task_key)
+                    audit_writer.write(
+                        f"[audit] {task_key}: could not judge on the re-check — {detail}; "
+                        f"supply the module the grader uses\n"
+                    )
+                elif is_indeterminate(detail):
+                    # A second timeout is still a non-verdict (the re-check runs
+                    # 16-wide too), so fail rather than ship an unjudged task.
+                    errored.append(task_key)
+                    audit_writer.write(
+                        f"[audit] {task_key}: could not judge — timed out again on the grader's "
+                        f"{retry_timeout}s budget (resource contention); regenerate\n"
+                    )
+                else:
+                    slow.append(task_key)
+                    audit_writer.write(
+                        f"[audit] {task_key}: kept — the placeholder did not verify within the grader's "
+                        f"{retry_timeout}s budget, so a no-op submission cannot PASS grading either\n"
+                    )
 
     for task_key in flagged:
         del manifest[task_key]
@@ -1807,7 +1879,11 @@ def layered_triviality_gate(output_root, manifest, audit_writer, jobs=16, timeou
             os.remove(path)
     if flagged:
         print(f"⚠️  [layered-triviality-gate] dropped {len(flagged)} degenerate task(s)")
-    return sorted(flagged)
+    if slow:
+        print(f"[layered-triviality-gate] kept {len(slow)} task(s) that exceed the grader's budget unproved")
+    if errored:
+        print(f"⚠️  [layered-triviality-gate] {len(errored)} task(s) could not be judged — generation error")
+    return sorted(flagged), sorted(slow), sorted(errored)
 
 
 def sweep_unreferenced_context(output_root, manifest, audit_writer):
@@ -1991,7 +2067,7 @@ def _finalize_layered(
     dropped = []
     if run_gates:
         layered_sany_gate(output_root, manifest, audit_writer)
-        dropped = layered_triviality_gate(output_root, manifest, audit_writer)
+        dropped, _slow, _errored = layered_triviality_gate(output_root, manifest, audit_writer)
 
     for key in sorted(superseded - set(manifest)):
         audit_writer.write(f"[audit] {key}: no longer generated by its source — removed from the manifest\n")

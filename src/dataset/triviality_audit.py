@@ -35,6 +35,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -50,6 +51,30 @@ from common.check_proof import (
     run_killgroup,
 )
 
+# A timeout is not a verdict: tlapm may still verify given more budget. Tagging
+# it lets a caller that must not ship an unchecked task (the layered gates) tell
+# "tlapm said no" from "tlapm never answered" and re-check instead.
+TIMEOUT_DETAIL = "timeout (placeholder did not verify within budget)"
+
+# A module the check could not resolve is also a non-verdict: tlapm never judged
+# the placeholder. Tagged so the layered gate can fail instead of keeping it.
+_MISSING_MODULE_PREFIX = "missing module "
+_UNKNOWN_MODULE_RE = re.compile(r'Unknown module "([^"]+)"')
+
+
+def is_indeterminate(detail: str) -> bool:
+    """True when `detail` records a non-verdict rather than a real result."""
+    return detail == TIMEOUT_DETAIL
+
+
+def is_missing_module(detail: str) -> bool:
+    """True when `detail` records a module the check could not resolve."""
+    return detail.startswith(_MISSING_MODULE_PREFIX)
+
+
+def missing_module_detail(module: str) -> str:
+    return f"{_MISSING_MODULE_PREFIX}{module!r} — not found on the check's module path"
+
 
 def is_placeholder_task(path: str) -> bool:
     """A file this gate applies to: it carries the ``PROOF OBVIOUS`` stub."""
@@ -60,9 +85,21 @@ def is_placeholder_task(path: str) -> bool:
         return False
 
 
-def check_task(path: str, tlapm_path: str, tlapm_lib: str, timeout: int = 120) -> tuple[bool, str]:
+def check_task(
+    path: str,
+    tlapm_path: str,
+    tlapm_lib: str,
+    timeout: int = 120,
+    community_lib: str | None = None,
+) -> tuple[bool, str]:
     """Return ``(degenerate, detail)``. Degenerate iff the grader's own
-    completeness reading accepts the file untouched."""
+    completeness reading accepts the file untouched.
+
+    ``community_lib`` is the vendored Community Modules directory the grader also
+    passes to tlapm; the layered gate resolves it once and hands it in because
+    the throwaway check dir is outside the repo where discovery would find it. A
+    standalone audit falls back to that discovery.
+    """
     tmp = tempfile.mkdtemp(prefix="triviality_gate_")
     try:
         base = os.path.basename(path)
@@ -71,15 +108,21 @@ def check_task(path: str, tlapm_path: str, tlapm_lib: str, timeout: int = 120) -
             if os.path.basename(dep) != base:
                 shutil.copy2(dep, os.path.join(tmp, os.path.basename(dep)))
         cmd = [tlapm_path, "--strict", "-I", tlapm_lib]
-        community_lib = find_community_lib(path)
+        community_lib = community_lib or find_community_lib(path)
         if community_lib:
             cmd += ["-I", community_lib]
         cmd.append(os.path.join(tmp, base))
         try:
             out, err, rc = run_killgroup(cmd, timeout, tmp)
         except subprocess.TimeoutExpired:
-            return False, "timeout (placeholder did not verify within budget)"
-        complete, _n_missing, _failed = parse_strict_status(rc, out + err)
+            return False, TIMEOUT_DETAIL
+        output = out + err
+        unknown = _UNKNOWN_MODULE_RE.search(output)
+        if unknown:
+            # tlapm never judged the placeholder; the grader resolves the module
+            # (the SumSequence_Lemma2a case), so this is a gate error, not a fail.
+            return False, missing_module_detail(unknown.group(1))
+        complete, _n_missing, _failed = parse_strict_status(rc, output)
         if complete:
             return True, "placeholder PROOF OBVIOUS verifies unchanged — no-op submission would PASS"
         return False, ""
