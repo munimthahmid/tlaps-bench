@@ -6,9 +6,11 @@ import json
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from ipaddress import ip_address
 from urllib.parse import urlparse
 
+from evaluator import toolcalls
 from evaluator.usage import UsageSummary
 
 from .agentic import AgenticBackend
@@ -51,6 +53,122 @@ def _result_usage(event: dict[str, object]) -> UsageSummary | None:
         sources=(_USAGE_SOURCE,),
         available=True,
         complete=True,
+    )
+
+
+@dataclass(frozen=True)
+class _CursorCall:
+    kind: str
+    body: dict[str, object]
+
+
+def _cursor_call(event: dict[str, object]) -> _CursorCall | None:
+    raw_call = event.get("tool_call")
+    if not isinstance(raw_call, dict):
+        return None
+    calls = [
+        _CursorCall(kind=kind, body=body)
+        for kind, body in raw_call.items()
+        if isinstance(kind, str) and kind.endswith("ToolCall") and isinstance(body, dict)
+    ]
+    return calls[0] if len(calls) == 1 else None
+
+
+def _cursor_command(call: _CursorCall | None) -> str | None:
+    if call is None or call.kind != "shellToolCall":
+        return None
+    args = call.body.get("args")
+    command = args.get("command") if isinstance(args, dict) else None
+    return command if isinstance(command, str) else None
+
+
+def _same_cursor_call(started: _CursorCall | None, completed: _CursorCall | None) -> bool:
+    if started is None or completed is None:
+        return started is completed
+    start_command = _cursor_command(started)
+    completed_command = _cursor_command(completed)
+    return started.kind == completed.kind and (
+        start_command is None or completed_command is None or start_command == completed_command
+    )
+
+
+def _tool_call_summary(jsonl_path: str) -> toolcalls.ToolCallSummary:
+    """Count Cursor's started/completed pairs once and validate its final result."""
+
+    evidence = toolcalls.EventStreamEvidence()
+    commands: list[str | None] = []
+    starts: dict[str, _CursorCall | None] = {}
+    completed_ids: set[str] = set()
+    invalid_calls: dict[str, _CursorCall | None] = {}
+    anonymous_witnesses: list[str | None] = []
+    lifecycle_warnings: list[str] = []
+    result_count = 0
+    activity_after_result = False
+    for event in toolcalls.iter_events(jsonl_path, evidence):
+        event_type = event.get("type")
+        if event_type == "result":
+            result_count += 1
+            continue
+        if result_count and event_type in {"assistant", "system", "tool_call"}:
+            activity_after_result = True
+        if event_type != "tool_call":
+            continue
+        subtype = event.get("subtype")
+        call = _cursor_call(event)
+        if call is None:
+            lifecycle_warnings.append("Cursor tool call has an invalid tool_call object")
+        command = _cursor_command(call)
+        raw_call_id = event.get("call_id")
+        call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id else None
+        if not isinstance(subtype, str) or subtype not in {"started", "completed"}:
+            if call_id is None and not anonymous_witnesses:
+                anonymous_witnesses.append(command)
+            elif call_id is not None:
+                if call_id not in invalid_calls:
+                    invalid_calls[call_id] = call
+                elif not _same_cursor_call(invalid_calls[call_id], call):
+                    lifecycle_warnings.append("Cursor invalid lifecycle records disagree for one call_id")
+            lifecycle_warnings.append("Cursor tool-call stream contains an invalid lifecycle subtype")
+            continue
+        if call_id is None:
+            if not anonymous_witnesses:
+                anonymous_witnesses.append(command)
+            lifecycle_warnings.append("Cursor tool call has a missing or invalid call_id")
+            continue
+        if subtype == "started":
+            if call_id in starts or call_id in completed_ids:
+                lifecycle_warnings.append("Cursor tool-call stream contains a duplicate call_id")
+            else:
+                starts[call_id] = call
+                commands.append(command)
+        else:
+            if call_id in completed_ids:
+                lifecycle_warnings.append("Cursor tool-call stream contains a duplicate completion")
+            elif call_id not in starts:
+                completed_ids.add(call_id)
+                commands.append(command)
+                lifecycle_warnings.append("Cursor tool completion is missing its start event")
+            else:
+                completed_ids.add(call_id)
+                if not _same_cursor_call(starts[call_id], call):
+                    lifecycle_warnings.append("Cursor tool start and completion disagree")
+
+    for call_id, call in invalid_calls.items():
+        if call_id not in starts and call_id not in completed_ids:
+            commands.append(_cursor_command(call))
+    if not starts and not completed_ids and not invalid_calls:
+        commands.extend(anonymous_witnesses)
+    open_calls = set(starts) - completed_ids
+    if open_calls:
+        lifecycle_warnings.append("Cursor tool start is missing its completion event")
+    terminal_complete = result_count == 1 and not activity_after_result
+    if not terminal_complete:
+        lifecycle_warnings.append("Cursor tool-call stream has no unique final result")
+    return toolcalls.summarize(
+        commands,
+        evidence,
+        lifecycle_complete=terminal_complete and not lifecycle_warnings,
+        warnings=lifecycle_warnings,
     )
 
 
@@ -203,11 +321,11 @@ class CursorBackend(AgenticBackend):
 
                     elif etype == "tool_call":
                         subtype = event.get("subtype", "")
-                        tc = event.get("tool_call", {})
-                        if not isinstance(tc, dict) or not tc:
+                        call = _cursor_call(event)
+                        if call is None:
                             continue
-                        kind = next(iter(tc))
-                        body = tc.get(kind) if isinstance(tc.get(kind), dict) else {}
+                        kind = call.kind
+                        body = call.body
                         args = body.get("args", {}) if isinstance(body, dict) else {}
                         if subtype == "started":
                             lines.append(f"[TOOL] {kind} {self._summarize_args(kind, args)}")
@@ -263,6 +381,9 @@ class CursorBackend(AgenticBackend):
             available=False,
             warnings=("Cursor terminal result usage is unavailable or invalid",),
         )
+
+    def parse_run_metadata(self, jsonl_path: str) -> dict[str, object]:
+        return {"tool_calls": _tool_call_summary(jsonl_path).to_dict()}
 
     @staticmethod
     def _summarize_args(kind: str, args: dict) -> str:
