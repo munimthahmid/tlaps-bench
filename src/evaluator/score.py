@@ -33,15 +33,20 @@ infra/quota before resolving is interrupted, not failed: like a non-genuine
 first attempt it is excluded from the continuation rate and reported separately
 (see ``continuation_interrupted``).
 
-Pluggable scoring: a scorer assigns a non-negative weight to each task; the
-score of a group of tasks is
+The primary score gives every represented source specification equal weight.
+For each specification, it computes the fraction of applicable selected tasks
+that passed, then averages those fractions. This preserves partial credit while
+preventing specifications with many extracted tasks from dominating the score.
+The historical task-micro pass rate and the fraction of specifications whose
+selected tasks all passed remain visible as secondary diagnostics.
+
+The legacy pluggable task scorer assigns a non-negative weight to each task;
+the score of a group of tasks is
 
     100 * (sum of weights of passed tasks) / (sum of all weights)
 
-The default ``equal`` scorer gives every task weight 1, so the score is simply
-the percentage of tasks passed. To add a scheme (e.g. weight by proof
-obligations), register another weight function in ``SCORERS`` and select it with
-``--scoring``.
+The ``equal`` task scorer gives every task weight 1. It remains available via
+``--scoring equal`` for compatibility and as the task-micro diagnostic.
 """
 
 from __future__ import annotations
@@ -52,7 +57,11 @@ import math
 import os
 import sys
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+from common.task_contract import load_manifest_specification_ids
 
 PASS_VERDICT = "PASS"
 SKIP_VERDICT = "SKIP"
@@ -67,6 +76,22 @@ COST_TIME_BACKENDS = {
     "litellm_oneshot",
     "pi",
 }
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SPECIFICATION_EQUAL = "specification-equal"
+SpecificationKey = tuple[str, str]
+
+
+@dataclass(frozen=True)
+class SpecificationScore:
+    """Primary and secondary scores over one selected result cohort."""
+
+    specification_macro_pct: float
+    task_micro_pct: float
+    tasks_passed: int
+    applicable_tasks: int
+    complete_specifications: int
+    represented_specifications: int
+    non_applicable_results: int
 
 
 def is_pass(result: dict) -> bool:
@@ -130,7 +155,7 @@ def continuation_rate_line(results: list[dict], weight: Callable[[dict], float],
     budget = continuation_budget(results)
     label = f" (≤{budget})" if budget else ""
     line = (
-        f"**Pass rate with continuations{label}**: {cn_pass}/{cn_total} ({cpct:.1f}%) — "
+        f"**Task-micro pass rate with continuations{label}**: {cn_pass}/{cn_total} ({cpct:.1f}%) — "
         f"{cn_pass - n_pass} recovered by continuation (pass@1 above is first-attempt only)"
     )
     n_cut = sum(1 for r in results if continuation_interrupted(r))
@@ -147,6 +172,140 @@ def n_skipped(results: list[dict]) -> int:
 def n_non_genuine(results: list[dict]) -> int:
     """How many results are excluded as non-genuine (need a re-run)."""
     return sum(1 for r in results if is_non_genuine(r))
+
+
+def scope_specification_ids(mode: str, task_specification_ids: Mapping[str, str]) -> dict[SpecificationKey, str]:
+    """Scope manifest task IDs by mode, since task paths can occur in both suites."""
+
+    return {(mode, task_id): spec_id for task_id, spec_id in task_specification_ids.items()}
+
+
+def _validate_specification_ids(specification_ids: Mapping[SpecificationKey, str]) -> None:
+    for key, spec_id in specification_ids.items():
+        if not isinstance(key, tuple) or len(key) != 2 or not all(isinstance(part, str) and part for part in key):
+            raise ValueError(f"invalid specification mapping key: {key!r}")
+        if not isinstance(spec_id, str) or not spec_id:
+            raise ValueError(f"missing specification identity for {key[0]}/{key[1]}")
+
+
+def _result_specification_key(result: dict) -> SpecificationKey | None:
+    mode = result.get("mode")
+    task_id = result.get("benchmark")
+    if not isinstance(mode, str) or not mode or not isinstance(task_id, str) or not task_id:
+        return None
+    return mode, task_id
+
+
+def specification_equal_score(
+    results: list[dict],
+    specification_ids: Mapping[SpecificationKey, str],
+    passed: Callable[[dict], bool] = is_pass,
+) -> SpecificationScore:
+    """Score selected, applicable tasks with equal total weight per specification.
+
+    A result is applicable when its ``(mode, benchmark)`` identity exists in the
+    active versioned manifest. Results for tasks removed from a later manifest
+    are excluded and counted as non-applicable. Active manifest entries without
+    a specification identity are invalid and fail before any score is returned.
+    SKIP and infra/quota-cut results are excluded by the existing score policy.
+    """
+
+    _validate_specification_ids(specification_ids)
+    by_specification: dict[SpecificationKey, list[dict]] = defaultdict(list)
+    non_applicable = 0
+
+    for result in results:
+        key = _result_specification_key(result)
+        if key is None or key not in specification_ids:
+            non_applicable += 1
+            continue
+        if is_skipped(result) or is_non_genuine(result):
+            continue
+        by_specification[(key[0], specification_ids[key])].append(result)
+
+    applicable = [result for grouped in by_specification.values() for result in grouped]
+    tasks_passed = sum(1 for result in applicable if passed(result))
+    applicable_tasks = len(applicable)
+    task_micro_pct = 100.0 * tasks_passed / applicable_tasks if applicable_tasks else 0.0
+
+    spec_fractions = [
+        sum(1 for result in grouped if passed(result)) / len(grouped) for grouped in by_specification.values()
+    ]
+    represented_specifications = len(spec_fractions)
+    specification_macro_pct = (
+        100.0 * sum(spec_fractions) / represented_specifications if represented_specifications else 0.0
+    )
+    complete_specifications = sum(
+        1 for grouped in by_specification.values() if all(passed(result) for result in grouped)
+    )
+    return SpecificationScore(
+        specification_macro_pct=specification_macro_pct,
+        task_micro_pct=task_micro_pct,
+        tasks_passed=tasks_passed,
+        applicable_tasks=applicable_tasks,
+        complete_specifications=complete_specifications,
+        represented_specifications=represented_specifications,
+        non_applicable_results=non_applicable,
+    )
+
+
+def applicable_manifest_results(
+    results: Iterable[dict], specification_ids: Mapping[SpecificationKey, str]
+) -> list[dict]:
+    """Return results whose task identity is present in the active manifests."""
+
+    return [result for result in results if _result_specification_key(result) in specification_ids]
+
+
+def specification_score_lines(
+    results: list[dict], specification_ids: Mapping[SpecificationKey, str]
+) -> tuple[list[str], SpecificationScore]:
+    """Format the shared primary/secondary score lines for reports."""
+
+    score = specification_equal_score(results, specification_ids)
+    task_line = f"**Task-micro pass rate**: {score.tasks_passed}/{score.applicable_tasks} ({score.task_micro_pct:.1f}%)"
+    mapped_results = applicable_manifest_results(results, specification_ids)
+    skipped = n_skipped(mapped_results)
+    non_genuine = n_non_genuine(mapped_results)
+    if skipped:
+        task_line += f" · {skipped} skipped"
+    if non_genuine:
+        task_line += f" · {non_genuine} infra/quota-cut (excluded — re-run)"
+
+    specification_word = "specification" if score.represented_specifications == 1 else "specifications"
+    complete_pct = (
+        100.0 * score.complete_specifications / score.represented_specifications
+        if score.represented_specifications
+        else 0.0
+    )
+    lines = [
+        f"**Specification-macro pass rate**: {score.specification_macro_pct:.1f}% "
+        f"across {score.represented_specifications} {specification_word}",
+        task_line,
+        f"**All leaves complete**: {score.complete_specifications}/{score.represented_specifications} "
+        f"{specification_word} ({complete_pct:.1f}%)",
+    ]
+    if score.non_applicable_results:
+        lines.append(
+            f"**Non-applicable results**: {score.non_applicable_results} not present in the active manifest (excluded)"
+        )
+    return lines, score
+
+
+def load_current_specification_ids(
+    modes: Iterable[str], benchmark_root: Path | None = None
+) -> dict[SpecificationKey, str]:
+    """Load stable identities from the current versioned manifests."""
+
+    root = benchmark_root or REPO_ROOT / "benchmark"
+    supported_modes = {"proof-completion", "proof-from-scratch"}
+    specification_ids: dict[SpecificationKey, str] = {}
+    for mode in sorted(set(modes)):
+        if mode not in supported_modes:
+            raise ValueError(f"cannot load specification identities for unknown mode {mode!r}")
+        task_specification_ids = load_manifest_specification_ids(root / mode, suite_name=mode)
+        specification_ids.update(scope_specification_ids(mode, task_specification_ids))
+    return specification_ids
 
 
 # A scorer maps one task result to a non-negative weight; the group score is the
@@ -264,28 +423,40 @@ def _format_cost(cost_usd: float | None) -> str:
     return f"${cost_usd:.6g}"
 
 
-def scorecard_md(run: dict, weight: Callable[[dict], float], scoring_name: str) -> str:
-    """Markdown scorecard for a single run: overall pass rate + per-module table."""
+def scorecard_md(
+    run: dict,
+    weight: Callable[[dict], float],
+    scoring_name: str,
+    specification_ids: Mapping[SpecificationKey, str] | None = None,
+) -> str:
+    """Markdown scorecard for a single run: overall score + per-module table."""
     results = run["results"]
-    pct, n_pass, n_total = weighted_score(results, weight)
-    skipped = n_skipped(results)
-    non_genuine = n_non_genuine(results)
+    scoring_results = results if specification_ids is None else applicable_manifest_results(results, specification_ids)
+    pct, n_pass, n_total = weighted_score(scoring_results, weight)
     in_tok, out_tok, secs, equivalent_cost_usd = _totals(results)
     has_equivalent_cost = _has_equivalent_cost(results)
 
-    pass_line = f"**Pass rate**: {n_pass}/{n_total} ({pct:.1f}%)"
-    if skipped:
-        pass_line += f" · {skipped} skipped"
-    if non_genuine:
-        pass_line += f" · {non_genuine} infra/quota-cut (excluded — re-run)"
     lines = [
         f"# Scorecard — {run['backend']} / {run['mode']}",
         "",
         f"**Source**: {run['path']}",
-        pass_line,
     ]
+    if specification_ids is None:
+        skipped = n_skipped(results)
+        non_genuine = n_non_genuine(results)
+        pass_line = f"**Pass rate**: {n_pass}/{n_total} ({pct:.1f}%)"
+        if skipped:
+            pass_line += f" · {skipped} skipped"
+        if non_genuine:
+            pass_line += f" · {non_genuine} infra/quota-cut (excluded — re-run)"
+        lines.append(pass_line)
+    else:
+        score_lines, specification_score = specification_score_lines(results, specification_ids)
+        lines.extend(score_lines)
+        n_pass = specification_score.tasks_passed
+
     # Separate, clearly-labeled metric — the pass rate above stays pass@1.
-    cont_line = continuation_rate_line(results, weight, n_pass)
+    cont_line = continuation_rate_line(scoring_results, weight, n_pass)
     if cont_line:
         lines.append(cont_line)
     if has_equivalent_cost:
@@ -294,20 +465,23 @@ def scorecard_md(run: dict, weight: Callable[[dict], float], scoring_name: str) 
         lines.append(f"**Equivalent cost**: {_format_cost(equivalent_cost_usd)}")
     else:
         lines.append(f"**Cost**: {in_tok:,} in / {out_tok:,} out tokens · {secs:,.0f}s total")
-    if scoring_name != "equal":
+    if scoring_name not in {"equal", SPECIFICATION_EQUAL}:
         lines.append(f"**Scoring**: {scoring_name} (weighted)")
+
+    by_module: dict[str, list[dict]] = defaultdict(list)
+    for r in scoring_results:
+        if is_skipped(r) or is_non_genuine(r):
+            continue  # fully-excluded modules drop out of the table entirely
+        by_module[r.get("module") or "?"].append(r)
+
+    module_heading = "## By module (task micro)" if specification_ids is not None else "## By module"
     lines += [
         "",
-        "## By module",
+        module_heading,
         "",
         "| Module | Passed | Total | Pass % |",
         "|--------|-------:|------:|-------:|",
     ]
-    by_module: dict[str, list[dict]] = defaultdict(list)
-    for r in results:
-        if is_skipped(r) or is_non_genuine(r):
-            continue  # fully-excluded modules drop out of the table entirely
-        by_module[r.get("module") or "?"].append(r)
     for module in sorted(by_module):
         mpct, mp, mt = weighted_score(by_module[module], weight)
         lines.append(f"| {module} | {mp} | {mt} | {mpct:.1f}% |")
@@ -321,52 +495,82 @@ def scorecard_md(run: dict, weight: Callable[[dict], float], scoring_name: str) 
     return "\n".join(lines)
 
 
-def comparison_md(runs: list[dict], weight: Callable[[dict], float], scoring_name: str) -> str:
+def comparison_md(
+    runs: list[dict],
+    weight: Callable[[dict], float],
+    scoring_name: str,
+    specification_ids: Mapping[SpecificationKey, str] | None = None,
+) -> str:
     """Markdown comparison table across several runs (one row per run)."""
     lines = [f"# Comparison — {len(runs)} runs", ""]
-    if scoring_name != "equal":
+    if scoring_name not in {"equal", SPECIFICATION_EQUAL}:
         lines += [f"**Scoring**: {scoring_name} (weighted)", ""]
     show_equivalent_cost = any(_has_equivalent_cost(run["results"]) for run in runs)
+    score_columns = (
+        "Specification macro | Task micro | All leaves complete"
+        if specification_ids is not None
+        else "Pass % | Passed/Total"
+    )
+    score_alignment = (
+        "--------------------:|-----------:|--------------------:"
+        if specification_ids is not None
+        else "-------:|-------------:"
+    )
     if show_equivalent_cost:
         lines += [
-            "| Run | Backend | Mode | Pass % | Passed/Total | Tokens (in/out) | Time | Equivalent cost |",
-            "|-----|---------|------|-------:|-------------:|-----------------|-----:|----------------:|",
+            f"| Run | Backend | Mode | {score_columns} | Tokens (in/out) | Time | Equivalent cost |",
+            f"|-----|---------|------|{score_alignment}|-----------------|-----:|----------------:|",
         ]
     else:
         lines += [
-            "| Run | Backend | Mode | Pass % | Passed/Total | Tokens (in/out) | Time |",
-            "|-----|---------|------|-------:|-------------:|-----------------|-----:|",
+            f"| Run | Backend | Mode | {score_columns} | Tokens (in/out) | Time |",
+            f"|-----|---------|------|{score_alignment}|-----------------|-----:|",
         ]
     for run in runs:
-        pct, n_pass, n_total = weighted_score(run["results"], weight)
+        results = run["results"]
+        scoring_results = (
+            results if specification_ids is None else applicable_manifest_results(results, specification_ids)
+        )
+        pct, n_pass, n_total = weighted_score(scoring_results, weight)
+        if specification_ids is not None:
+            specification_score = specification_equal_score(results, specification_ids)
         in_tok, out_tok, secs, equivalent_cost_usd = _totals(run["results"])
         run_has_equivalent_cost = _has_equivalent_cost(run["results"])
         if show_equivalent_cost and not run_has_equivalent_cost and run["backend"] in COST_TIME_BACKENDS:
             formal = [result for result in run["results"] if not is_skipped(result) and not is_non_genuine(result)]
             secs = _sum_metric(formal, "time_secs")
-        passed_total = f"{n_pass}/{n_total}"
-        skipped = n_skipped(run["results"])
+        score_notes = ""
+        skipped = n_skipped(scoring_results)
         if skipped:
-            passed_total += f" (+{skipped} skipped)"
-        non_genuine = n_non_genuine(run["results"])
+            score_notes += f" (+{skipped} skipped)"
+        non_genuine = n_non_genuine(scoring_results)
         if non_genuine:
-            passed_total += f" (+{non_genuine} infra-cut)"
-        if any(r.get("continuations") for r in run["results"]):
-            _, cn_pass, _ = weighted_score(run["results"], weight, passed=is_pass_with_continuations)
+            score_notes += f" (+{non_genuine} infra-cut)"
+        if any(r.get("continuations") for r in scoring_results):
+            _, cn_pass, _ = weighted_score(scoring_results, weight, passed=is_pass_with_continuations)
             # Name the budget: +1 recovery out of ≤1 round and out of ≤10 are
             # different results, and rows in this table exist to be compared.
-            budget = continuation_budget(run["results"])
+            budget = continuation_budget(scoring_results)
             if budget:
-                passed_total += f" (+{cn_pass - n_pass} via ≤{budget} continuations)"
+                score_notes += f" (+{cn_pass - n_pass} via ≤{budget} continuations)"
             else:
-                passed_total += f" (+{cn_pass - n_pass} via continuation)"
-            n_cut = sum(1 for r in run["results"] if continuation_interrupted(r))
+                score_notes += f" (+{cn_pass - n_pass} via continuation)"
+            n_cut = sum(1 for r in scoring_results if continuation_interrupted(r))
             if n_cut:
-                passed_total += f" (+{n_cut} chain(s) cut)"
-        row = (
-            f"| {run['id']} | {run['backend']} | {run['mode']} | {pct:.1f}% | "
-            f"{passed_total} | {in_tok:,}/{out_tok:,} | "
-        )
+                score_notes += f" (+{n_cut} chain(s) cut)"
+        passed_total = f"{n_pass}/{n_total}{score_notes}"
+        if specification_ids is None:
+            score_cells = f"{pct:.1f}% | {passed_total}"
+        else:
+            if specification_score.non_applicable_results:
+                score_notes += f" (+{specification_score.non_applicable_results} non-applicable)"
+            score_cells = (
+                f"{specification_score.specification_macro_pct:.1f}% | "
+                f"{n_pass}/{n_total} ({specification_score.task_micro_pct:.1f}%){score_notes} | "
+                f"{specification_score.complete_specifications}/"
+                f"{specification_score.represented_specifications}"
+            )
+        row = f"| {run['id']} | {run['backend']} | {run['mode']} | {score_cells} | {in_tok:,}/{out_tok:,} | "
         if show_equivalent_cost:
             time_text = (
                 _format_time(secs)
@@ -391,18 +595,18 @@ def comparison_md(runs: list[dict], weight: Callable[[dict], float], scoring_nam
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="tlaps-bench score",
-        description="Score benchmark results (pass rate, per-module breakdown) from results.json.",
+        description="Score benchmark results (specification macro plus diagnostics) from results.json.",
     )
     parser.add_argument("paths", nargs="+", help="One or more results.json files or run directories")
     parser.add_argument(
         "--scoring",
-        default="equal",
-        choices=sorted(SCORERS),
-        help="Scoring scheme (default: equal — every task weight 1, score = %% passed)",
+        default=SPECIFICATION_EQUAL,
+        choices=[SPECIFICATION_EQUAL, *sorted(SCORERS)],
+        help="Scoring scheme (default: specification-equal; 'equal' retains legacy task-micro scoring)",
     )
     args = parser.parse_args()
 
-    weight = SCORERS[args.scoring]
+    weight = SCORERS["equal"] if args.scoring == SPECIFICATION_EQUAL else SCORERS[args.scoring]
     runs = []
     for p in args.paths:
         try:
@@ -411,10 +615,19 @@ def main() -> int:
             sys.stderr.write(f"tlaps-bench score: {e}\n")
             return 1
 
+    specification_ids = None
+    if args.scoring == SPECIFICATION_EQUAL:
+        modes = {result.get("mode") for run in runs for result in run["results"]}
+        try:
+            specification_ids = load_current_specification_ids(mode for mode in modes if isinstance(mode, str))
+        except (ValueError, OSError) as e:
+            sys.stderr.write(f"tlaps-bench score: {e}\n")
+            return 1
+
     if len(runs) == 1:
-        print(scorecard_md(runs[0], weight, args.scoring))
+        print(scorecard_md(runs[0], weight, args.scoring, specification_ids))
     else:
-        print(comparison_md(runs, weight, args.scoring))
+        print(comparison_md(runs, weight, args.scoring, specification_ids))
     return 0
 
 

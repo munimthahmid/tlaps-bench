@@ -1,10 +1,10 @@
 """Scoring from results.json.
 
 A task passes iff check_verdict == "PASS"; CHEATING/FAIL/TIMEOUT/ERROR all count
-as not passed, and CHEATING is never shown as its own category. The default
-"equal" scorer makes the score the plain percentage of tasks passed. SKIP is the
-one exception: it is dropped from scoring entirely (neither passed nor failed)
-and only reported as a side count.
+as not passed, and CHEATING is never shown as its own category. Specification
+macro is primary; the legacy equal-task scorer remains a diagnostic and CLI
+option. SKIP is dropped from scoring entirely (neither passed nor failed) and
+only reported as a side count.
 
 Run: PYTHONPATH=src python3 -m pytest tests/evaluator/test_score.py
 """
@@ -12,8 +12,11 @@ Run: PYTHONPATH=src python3 -m pytest tests/evaluator/test_score.py
 import json
 import sys
 
+import pytest
+
 from evaluator.score import (
     SCORERS,
+    SPECIFICATION_EQUAL,
     comparison_md,
     continuation_budget,
     continuation_interrupted,
@@ -25,7 +28,9 @@ from evaluator.score import (
     main,
     n_non_genuine,
     n_skipped,
+    scope_specification_ids,
     scorecard_md,
+    specification_equal_score,
     weighted_score,
 )
 
@@ -59,6 +64,110 @@ def test_equal_weight_is_percent_passed():
 
 def test_empty_is_zero_not_crash():
     assert weighted_score([], EQUAL) == (0.0, 0, 0)
+
+
+def test_specification_equal_preserves_partial_credit_without_task_count_bias():
+    specification_ids = scope_specification_ids(
+        "proof-completion",
+        {
+            "A/One.tla": "A/A.tla",
+            "A/Two.tla": "A/A.tla",
+            "B/Only.tla": "B/B.tla",
+        },
+    )
+    results = [
+        _r("PASS", mode="proof-completion", benchmark="A/One.tla"),
+        _r("FAIL", mode="proof-completion", benchmark="A/Two.tla"),
+        _r("PASS", mode="proof-completion", benchmark="B/Only.tla"),
+    ]
+
+    score = specification_equal_score(results, specification_ids)
+
+    assert score.specification_macro_pct == 75.0  # mean(1/2, 1/1)
+    assert score.task_micro_pct == pytest.approx(66.6667)
+    assert (score.tasks_passed, score.applicable_tasks) == (2, 3)
+    assert (score.complete_specifications, score.represented_specifications) == (1, 2)
+
+
+def test_specification_equal_rejects_an_active_task_without_a_spec_id():
+    results = [_r("PASS", mode="proof-completion", benchmark="A/One.tla")]
+
+    with pytest.raises(ValueError, match="missing specification identity"):
+        specification_equal_score(results, {("proof-completion", "A/One.tla"): ""})
+
+
+def test_specification_equal_excludes_non_applicable_and_unscored_results():
+    specification_ids = scope_specification_ids(
+        "proof-completion",
+        {
+            "A/Pass.tla": "A/A.tla",
+            "A/Skipped.tla": "A/A.tla",
+            "B/Infra.tla": "B/B.tla",
+        },
+    )
+    results = [
+        _r("PASS", mode="proof-completion", benchmark="A/Pass.tla"),
+        _r("SKIP", mode="proof-completion", benchmark="A/Skipped.tla"),
+        _r("ERROR", mode="proof-completion", benchmark="B/Infra.tla", termination_reason="INFRA_ERROR"),
+        _r("PASS", mode="proof-completion", benchmark="Removed/Old.tla"),
+    ]
+
+    score = specification_equal_score(results, specification_ids)
+
+    assert score.specification_macro_pct == 100.0
+    assert (score.tasks_passed, score.applicable_tasks) == (1, 1)
+    assert (score.complete_specifications, score.represented_specifications) == (1, 1)
+    assert score.non_applicable_results == 1
+
+
+def test_specification_scorecard_keeps_both_secondary_diagnostics():
+    specification_ids = scope_specification_ids(
+        "proof-completion",
+        {
+            "A/One.tla": "A/A.tla",
+            "A/Two.tla": "A/A.tla",
+            "B/Only.tla": "B/B.tla",
+        },
+    )
+    results = [
+        _r("PASS", module="A", mode="proof-completion", benchmark="A/One.tla"),
+        _r("FAIL", module="A", mode="proof-completion", benchmark="A/Two.tla"),
+        _r("PASS", module="B", mode="proof-completion", benchmark="B/Only.tla"),
+    ]
+    run = {"path": "x", "id": "x", "backend": "codex", "mode": "proof-completion", "results": results}
+
+    md = scorecard_md(run, EQUAL, SPECIFICATION_EQUAL, specification_ids)
+
+    assert "**Specification-macro pass rate**: 75.0% across 2 specifications" in md
+    assert "**Task-micro pass rate**: 2/3 (66.7%)" in md
+    assert "**All leaves complete**: 1/2 specifications (50.0%)" in md
+    assert "## By module (task micro)" in md
+    assert "| **Total** | **2** | **3** | **66.7%** |" in md
+
+
+def test_specification_comparison_shows_primary_and_secondary_scores():
+    specification_ids = scope_specification_ids(
+        "proof-completion",
+        {"A/One.tla": "A/A.tla", "A/Two.tla": "A/A.tla", "B/Only.tla": "B/B.tla"},
+    )
+    runs = [
+        {
+            "path": "one",
+            "id": "one",
+            "backend": "codex",
+            "mode": "proof-completion",
+            "results": [
+                _r("PASS", mode="proof-completion", benchmark="A/One.tla"),
+                _r("FAIL", mode="proof-completion", benchmark="A/Two.tla"),
+                _r("PASS", mode="proof-completion", benchmark="B/Only.tla"),
+            ],
+        }
+    ]
+
+    md = comparison_md(runs, EQUAL, SPECIFICATION_EQUAL, specification_ids)
+
+    assert "| Run | Backend | Mode | Specification macro | Task micro | All leaves complete |" in md
+    assert "| one | codex | proof-completion | 75.0% | 2/3 (66.7%) | 1/2 |" in md
 
 
 def test_scorecard_module_breakdown_and_no_cheating_row():
@@ -411,7 +520,7 @@ def test_scorecard_reports_continuation_rate_separately():
     run = {"path": "x", "id": "r", "backend": "copilot", "mode": "proof-completion", "results": results}
     md = scorecard_md(run, EQUAL, "equal")
     assert "**Pass rate**: 0/2 (0.0%)" in md  # pass@1 stays first-attempt only
-    assert "**Pass rate with continuations**: 1/2 (50.0%) — 1 recovered by continuation" in md
+    assert "**Task-micro pass rate with continuations**: 1/2 (50.0%) — 1 recovered by continuation" in md
 
 
 def test_scorecard_labels_continuation_budget_and_excludes_cut_chains():
@@ -426,7 +535,7 @@ def test_scorecard_labels_continuation_budget_and_excludes_cut_chains():
     md = scorecard_md(run, EQUAL, "equal")
     assert "**Pass rate**: 0/3 (0.0%)" in md  # the cut chain's genuine first FAIL stays scored
     assert (
-        "**Pass rate with continuations (≤3)**: 1/2 (50.0%) — 1 recovered by continuation "
+        "**Task-micro pass rate with continuations (≤3)**: 1/2 (50.0%) — 1 recovered by continuation "
         "(pass@1 above is first-attempt only) · 1 chain(s) infra/quota-cut (excluded — re-run)"
     ) in md
 
@@ -497,17 +606,43 @@ def _write_run(tmp_path, name, results):
 
 
 def test_main_single_prints_scorecard(tmp_path, monkeypatch, capsys):
-    d = _write_run(tmp_path, "run1", [_r("PASS", backend="codex", mode="proof-completion"), _r("FAIL")])
+    results = [
+        _r("PASS", backend="codex", mode="proof-completion", benchmark="A/One.tla"),
+        _r("FAIL", backend="codex", mode="proof-completion", benchmark="A/Two.tla"),
+    ]
+    d = _write_run(tmp_path, "run1", results)
+    specification_ids = scope_specification_ids("proof-completion", {"A/One.tla": "A/A.tla", "A/Two.tla": "A/A.tla"})
+    monkeypatch.setattr("evaluator.score.load_current_specification_ids", lambda _modes: specification_ids)
     monkeypatch.setattr(sys, "argv", ["tlaps-bench score", d])
     assert main() == 0
     out = capsys.readouterr().out
     assert "# Scorecard" in out
-    assert "**Pass rate**: 1/2 (50.0%)" in out
+    assert "**Specification-macro pass rate**: 50.0% across 1 specification" in out
+    assert "**Task-micro pass rate**: 1/2 (50.0%)" in out
+
+
+def test_main_equal_retains_legacy_task_micro_score(tmp_path, monkeypatch, capsys):
+    d = _write_run(tmp_path, "run1", [_r("PASS"), _r("FAIL")])
+    monkeypatch.setattr(sys, "argv", ["tlaps-bench score", "--scoring", "equal", d])
+
+    assert main() == 0
+
+    assert "**Pass rate**: 1/2 (50.0%)" in capsys.readouterr().out
 
 
 def test_main_multiple_prints_comparison(tmp_path, monkeypatch, capsys):
-    d1 = _write_run(tmp_path, "run1", [_r("PASS", backend="codex", mode="proof-completion")])
-    d2 = _write_run(tmp_path, "run2", [_r("FAIL", backend="codex", mode="proof-completion")])
+    d1 = _write_run(
+        tmp_path,
+        "run1",
+        [_r("PASS", backend="codex", mode="proof-completion", benchmark="A/One.tla")],
+    )
+    d2 = _write_run(
+        tmp_path,
+        "run2",
+        [_r("FAIL", backend="codex", mode="proof-completion", benchmark="A/One.tla")],
+    )
+    specification_ids = scope_specification_ids("proof-completion", {"A/One.tla": "A/A.tla"})
+    monkeypatch.setattr("evaluator.score.load_current_specification_ids", lambda _modes: specification_ids)
     monkeypatch.setattr(sys, "argv", ["tlaps-bench score", d1, d2])
     assert main() == 0
     assert "# Comparison — 2 runs" in capsys.readouterr().out

@@ -53,6 +53,9 @@ class ProofFromScratch(Mode):
             )
         return [str(boundary.task_path) for boundary in boundaries]
 
+    def specification_ids(self) -> dict[str, str]:
+        return {boundary.task_key: boundary.spec_id for boundary in self._boundaries}
+
     def get_dependencies(self, benchmark_path: str) -> list[str]:
         """Return only the exact context declared for a manifest task."""
 

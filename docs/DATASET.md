@@ -9,6 +9,10 @@ i.e. one coherent protocol or example. A protocol whose proof is split across
 several TLA+ modules stays a single row. The example name links to its upstream
 location.
 
+This presentation grouping is intentionally different from the finer scoring
+identity: scores group tasks by their exact originating source `.tla` module.
+See the [scoring documentation](USAGE.md#tlaps-bench-score).
+
 `–` marks a mode with no task for that example: a source with no human proofs
 yields no proof-completion task, and an example whose only proven theorems are
 *unnamed* (so they cannot be referenced as scaffolding) is likewise

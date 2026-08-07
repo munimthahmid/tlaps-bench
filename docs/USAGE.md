@@ -179,7 +179,7 @@ Benchmark files live in `benchmark/proof-completion/` and `benchmark/proof-from-
 
 ### Layered-task trust boundary
 
-For layered suites, `benchmark/<mode>/manifest.json` is the authority for task discovery and context. Each entry names one editable target and its complete local TLA+ dependency closure. The runner does not infer dependencies from neighboring filenames, so sibling tasks and unrelated definition modules never enter the workspace, prompt, input artifact, or verifier. An invalid manifest stops the run.
+For layered suites, `benchmark/<mode>/manifest.json` is the authority for task discovery, specification identity, and context. Each entry names the originating source module as `spec_id`, one editable target, and its complete local TLA+ dependency closure. The runner does not infer dependencies from neighboring filenames, so sibling tasks and unrelated definition modules never enter the workspace, prompt, input artifact, or verifier. An invalid manifest stops the run. See [`tlaps-bench score`](#tlaps-bench-score) for the grouping rule.
 
 Proof-completion targets contain one `AGENT PROOF` marker pair. Only its interior may change; imports, the target theorem statement, marker lines, and all surrounding text remain canonical. Module-level declarations are rejected inside the proof region, while proof-local steps such as `DEFINE` and `USE` remain valid. Model and scaffold modules are read-only context; their admitted scaffold lemmas are allowed as givens.
 
@@ -246,14 +246,29 @@ Exit codes: `0` = PASS, `1` = FAIL, `3` = ERROR.
 
 ### `tlaps-bench score`
 
-Compute pass rates from one or more result files.
+Compute scores from one or more result files.
 
 ```bash
 uv run tlaps-bench score results/proof-from-scratch/pi/20260626_220712/results.json
 uv run tlaps-bench score results/proof-completion/*/results.json
 ```
 
-Pass rate = passed tasks / scored tasks. `SKIP`, `INFRA_ERROR`, and `QUOTA_EXHAUSTED` results are excluded from scoring and reported separately; cheating verdicts count as failures.
+Each manifest entry maps its mode-relative task ID to the originating `.tla` path under `source/` (`spec_id`). Tasks from the same source module form one scoring group.
+
+The default primary score gives every represented source specification equal weight while preserving partial credit:
+
+```text
+spec_score = passed selected tasks / applicable selected tasks
+overall_score = mean(spec_score)
+```
+
+Reports show three scores:
+
+- **Specification-macro** (primary): the average above.
+- **Task-micro**: passed applicable tasks divided by all applicable tasks.
+- **All-leaves-complete**: specifications whose selected tasks all passed.
+
+`SKIP`, infrastructure-cut, and removed tasks are excluded and reported separately. Pass `--scoring equal` for the legacy task-micro-primary output.
 
 ### `tlaps-bench validate`
 
@@ -273,7 +288,7 @@ uv run tlaps-bench generate
 uv run tlaps-bench generate --mode proof-from-scratch
 ```
 
-Proof-completion generation emits the layered suite described in [Layered-task trust boundary](#layered-task-trust-boundary): one read-only `<base>Model.tla` per source, one read-only `<task>Scaffold.tla` per target, an editable `<task>.tla` holding the fixed theorem statement and the marked proof region, and a `manifest.json` naming every task's exact context. Use `--legacy` only for the old generators.
+Proof-completion generation emits the layered suite described in [Layered-task trust boundary](#layered-task-trust-boundary): one read-only `<base>Model.tla` per source, one read-only `<task>Scaffold.tla` per target, an editable `<task>.tla` holding the fixed theorem statement and the marked proof region, and a `manifest.json` naming every task's source specification and exact context. Use `--legacy` only for the old generators.
 
 ```bash
 uv run tlaps-bench generate --mode proof-completion
@@ -295,7 +310,7 @@ Each run writes results to a timestamped directory:
 ```
 results/<mode>/<backend>/<timestamp>/
 ├── results.json              # All verdicts, time, equivalent cost, and tokens
-├── summary.md                # Pass rate, total task time, and equivalent cost
+├── summary.md                # Scores, total task time, and equivalent cost
 └── <Module>/<Theorem>/
     ├── result.json           # Per-benchmark verdict and metadata
     ├── input/
@@ -355,7 +370,7 @@ uv run tlaps-bench run --backend codex --model gpt-5.5 --max-continuations 3
 
 Each benchmark still starts with the normal first attempt. If that attempt completes without PASS, the runner starts up to `N` more attempts in the same workspace. Each continuation sees the partial proof from the previous attempt. The chain stops once a continuation passes or the limit is reached.
 
-The first-attempt verdict stays in `check_verdict`. Continuation rounds are saved under `continuations` in `results.json`, and reports show them separately as `Pass rate with continuations (≤N)`.
+The first-attempt verdict stays in `check_verdict`. Continuation rounds are saved under `continuations` in `results.json`, and reports show them separately as `Task-micro pass rate with continuations (≤N)`.
 
 ---
 

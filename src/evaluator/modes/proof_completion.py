@@ -90,6 +90,11 @@ class ProofCompletion(Mode):
             )
         return [str(boundary.task_path) for boundary in boundaries]
 
+    def specification_ids(self) -> dict[str, str] | None:
+        if not self.uses_strict_contract:
+            return None
+        return {boundary.task_key: boundary.spec_id for boundary in self._boundaries or ()}
+
     def get_dependencies(self, benchmark_path: str) -> list[str]:
         if not self.uses_strict_contract:
             return super().get_dependencies(benchmark_path)

@@ -74,8 +74,9 @@ def test_loads_sorted_immutable_boundaries_and_preserves_context_order(tmp_path)
     _write_manifest(
         suite,
         {
-            "Zed/Zed_Target.tla": {"context": []},
+            "Zed/Zed_Target.tla": {"spec_id": "Fixture.tla", "context": []},
             "Alpha/Alpha_Target.tla": {
+                "spec_id": "Fixture.tla",
                 "context": ["Shared/ZContext.tla", "Shared/AContext.tla"],
             },
         },
@@ -85,6 +86,7 @@ def test_loads_sorted_immutable_boundaries_and_preserves_context_order(tmp_path)
 
     assert list(boundaries) == ["Alpha/Alpha_Target.tla", "Zed/Zed_Target.tla"]
     assert boundaries["Alpha/Alpha_Target.tla"].task_path == target_a
+    assert boundaries["Alpha/Alpha_Target.tla"].spec_id == "Fixture.tla"
     assert boundaries["Alpha/Alpha_Target.tla"].context_paths == (context_z, context_a)
     assert boundaries["Zed/Zed_Target.tla"].task_path == target_z
     with pytest.raises(TypeError):
@@ -114,11 +116,14 @@ def test_malformed_json_is_rejected(tmp_path):
     ("manifest", "message"),
     [
         ([], "root must be a JSON object"),
-        ({"Task.tla": []}, "object containing only 'context'"),
-        ({"Task.tla": {}}, "object containing only 'context'"),
-        ({"Task.tla": {"context": [], "extra": True}}, "object containing only 'context'"),
-        ({"Task.tla": {"context": {}}}, "field 'context' must be a list"),
-        ({"Task.tla": {"context": [7]}}, "context item 0 must be a string"),
+        ({"Task.tla": []}, "exactly 'spec_id' and 'context'"),
+        ({"Task.tla": {}}, "exactly 'spec_id' and 'context'"),
+        ({"Task.tla": {"spec_id": "Fixture.tla", "context": [], "extra": True}}, "exactly 'spec_id' and 'context'"),
+        ({"Task.tla": {"context": []}}, "exactly 'spec_id' and 'context'"),
+        ({"Task.tla": {"spec_id": 7, "context": []}}, "field 'spec_id' must be a string"),
+        ({"Task.tla": {"spec_id": "../Fixture.tla", "context": []}}, "field 'spec_id'.*canonical"),
+        ({"Task.tla": {"spec_id": "Fixture.tla", "context": {}}}, "field 'context' must be a list"),
+        ({"Task.tla": {"spec_id": "Fixture.tla", "context": [7]}}, "context item 0 must be a string"),
     ],
 )
 def test_invalid_manifest_schema_is_rejected(tmp_path, manifest, message):
@@ -134,7 +139,7 @@ def test_duplicate_json_keys_are_rejected(tmp_path):
     suite = tmp_path / "proof-from-scratch"
     suite.mkdir()
     (suite / "manifest.json").write_text(
-        '{"Task.tla":{"context":[]},"Task.tla":{"context":[]}}',
+        '{"Task.tla":{"spec_id": "Fixture.tla", "context":[]},"Task.tla":{"spec_id": "Fixture.tla", "context":[]}}',
         encoding="utf-8",
     )
 
@@ -157,7 +162,7 @@ def test_duplicate_json_keys_are_rejected(tmp_path):
 )
 def test_noncanonical_or_unsafe_paths_are_rejected(tmp_path, task_key):
     suite = tmp_path / "proof-from-scratch"
-    _write_manifest(suite, {task_key: {"context": []}})
+    _write_manifest(suite, {task_key: {"spec_id": "Fixture.tla", "context": []}})
 
     with pytest.raises(ManifestError):
         load_proof_from_scratch_manifest(suite)
@@ -165,7 +170,7 @@ def test_noncanonical_or_unsafe_paths_are_rejected(tmp_path, task_key):
 
 def test_missing_manifest_file_entry_is_rejected(tmp_path):
     suite = tmp_path / "proof-from-scratch"
-    _write_manifest(suite, {"Missing.tla": {"context": []}})
+    _write_manifest(suite, {"Missing.tla": {"spec_id": "Fixture.tla", "context": []}})
 
     with pytest.raises(ManifestError, match="does not exist"):
         load_proof_from_scratch_manifest(suite)
@@ -176,7 +181,7 @@ def test_task_symlink_cannot_escape_suite_root(tmp_path):
     suite.mkdir()
     outside = _write_module(tmp_path, "Escape.tla")
     (suite / "Escape.tla").symlink_to(outside)
-    _write_manifest(suite, {"Escape.tla": {"context": []}})
+    _write_manifest(suite, {"Escape.tla": {"spec_id": "Fixture.tla", "context": []}})
 
     with pytest.raises(ManifestError, match="escapes the suite root through a symlink"):
         load_proof_from_scratch_manifest(suite)
@@ -197,7 +202,7 @@ def test_duplicate_context_path_is_rejected(tmp_path):
     suite = tmp_path / "proof-from-scratch"
     _write_module(suite, "Task.tla")
     _write_module(suite, "Model.tla")
-    _write_manifest(suite, {"Task.tla": {"context": ["Model.tla", "Model.tla"]}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": ["Model.tla", "Model.tla"]}})
 
     with pytest.raises(ManifestError, match="repeats context path 'Model.tla'"):
         load_proof_from_scratch_manifest(suite)
@@ -210,7 +215,7 @@ def test_context_aliases_to_same_file_are_rejected(tmp_path):
     alias = suite / "two/Model.tla"
     alias.parent.mkdir()
     alias.symlink_to(original)
-    _write_manifest(suite, {"Task.tla": {"context": ["one/Model.tla", "two/Model.tla"]}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": ["one/Model.tla", "two/Model.tla"]}})
 
     with pytest.raises(ManifestError, match="multiple context paths resolving"):
         load_proof_from_scratch_manifest(suite)
@@ -219,7 +224,7 @@ def test_context_aliases_to_same_file_are_rejected(tmp_path):
 def test_target_cannot_appear_in_its_own_context(tmp_path):
     suite = tmp_path / "proof-from-scratch"
     _write_module(suite, "Task.tla")
-    _write_manifest(suite, {"Task.tla": {"context": ["Task.tla"]}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": ["Task.tla"]}})
 
     with pytest.raises(ManifestError, match="includes itself in its context"):
         load_proof_from_scratch_manifest(suite)
@@ -232,8 +237,8 @@ def test_context_cannot_include_another_manifest_task(tmp_path):
     _write_manifest(
         suite,
         {
-            "First.tla": {"context": ["Second.tla"]},
-            "Second.tla": {"context": []},
+            "First.tla": {"spec_id": "Fixture.tla", "context": ["Second.tla"]},
+            "Second.tla": {"spec_id": "Fixture.tla", "context": []},
         },
     )
 
@@ -246,7 +251,7 @@ def test_duplicate_module_basenames_are_rejected_per_task(tmp_path):
     _write_module(suite, "Task.tla")
     _write_module(suite, "one/Model.tla")
     _write_module(suite, "two/Model.tla")
-    _write_manifest(suite, {"Task.tla": {"context": ["one/Model.tla", "two/Model.tla"]}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": ["one/Model.tla", "two/Model.tla"]}})
 
     with pytest.raises(ManifestError, match="duplicate module basename 'Model.tla'"):
         load_proof_from_scratch_manifest(suite)
@@ -255,7 +260,7 @@ def test_duplicate_module_basenames_are_rejected_per_task(tmp_path):
 def test_filename_must_match_declared_module_name(tmp_path):
     suite = tmp_path / "proof-from-scratch"
     _write_module(suite, "Task.tla", declared_name="Different")
-    _write_manifest(suite, {"Task.tla": {"context": []}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": []}})
 
     with pytest.raises(ManifestError, match="filename/module mismatch"):
         load_proof_from_scratch_manifest(suite)
@@ -268,7 +273,7 @@ def test_in_suite_symlink_cannot_hide_filename_module_mismatch(tmp_path):
     alias = suite / "alias/Alias.tla"
     alias.parent.mkdir()
     alias.symlink_to(real_module)
-    _write_manifest(suite, {"Task.tla": {"context": ["alias/Alias.tla"]}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": ["alias/Alias.tla"]}})
 
     with pytest.raises(ManifestError, match="filename/module mismatch.*Alias"):
         load_proof_from_scratch_manifest(suite)
@@ -278,7 +283,7 @@ def test_every_file_must_have_a_module_header(tmp_path):
     suite = tmp_path / "proof-from-scratch"
     suite.mkdir()
     (suite / "Task.tla").write_text("THEOREM Target == TRUE\n", encoding="utf-8")
-    _write_manifest(suite, {"Task.tla": {"context": []}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": []}})
 
     with pytest.raises(ManifestError, match="has no module header"):
         load_proof_from_scratch_manifest(suite)
@@ -287,7 +292,7 @@ def test_every_file_must_have_a_module_header(tmp_path):
 def test_task_must_have_valid_editable_regions(tmp_path):
     suite = tmp_path / "proof-from-scratch"
     _write_module(suite, "Task.tla", body="THEOREM Target == TRUE\nPROOF OBVIOUS\n")
-    _write_manifest(suite, {"Task.tla": {"context": []}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": []}})
 
     with pytest.raises(ManifestError, match="Task.tla.*invalid editable regions"):
         load_proof_from_scratch_manifest(suite)
@@ -305,7 +310,7 @@ def test_manifest_context_must_cover_transitive_module_references(tmp_path, refe
     _write_task(suite, "Task.tla", body="EXTENDS Model\n")
     _write_module(suite, "Model.tla", body=reference)
     _write_module(suite, "Missing.tla")
-    _write_manifest(suite, {"Task.tla": {"context": ["Model.tla"]}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": ["Model.tla"]}})
 
     with pytest.raises(ManifestError, match="incomplete context.*Missing"):
         load_proof_from_scratch_manifest(suite)
@@ -319,7 +324,7 @@ def test_manifest_closure_allows_trusted_libraries_and_ignores_non_code_referenc
         "Model.tla",
         body=('Description == "INSTANCE StringOnly"\n\\* EXTENDS LineCommentOnly\n(* INSTANCE BlockCommentOnly *)\n'),
     )
-    _write_manifest(suite, {"Task.tla": {"context": ["Model.tla"]}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": ["Model.tla"]}})
 
     boundaries = load_proof_from_scratch_manifest(suite)
 

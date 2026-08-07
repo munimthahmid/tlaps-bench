@@ -614,7 +614,7 @@ def test_summary_reports_continuation_metric_separately(tmp_path):
     )
     summary = (tmp_path / "summary.md").read_text()
     assert "**Pass rate**: 0/2 (0.0%)" in summary  # pass@1 stays first-attempt only
-    assert "**Pass rate with continuations (≤3)**: 1/2 (50.0%) — 1 recovered by continuation" in summary
+    assert "**Task-micro pass rate with continuations (≤3)**: 1/2 (50.0%) — 1 recovered by continuation" in summary
     assert "PASS on continuation 1" in summary
 
 
@@ -637,7 +637,7 @@ def test_summary_excludes_interrupted_chains_from_continuation_rate(tmp_path):
     summary = (tmp_path / "summary.md").read_text()
     assert "**Pass rate**: 0/3 (0.0%)" in summary  # cut-chain's genuine first FAIL stays scored
     assert (
-        "**Pass rate with continuations (≤3)**: 1/2 (50.0%) — 1 recovered by continuation "
+        "**Task-micro pass rate with continuations (≤3)**: 1/2 (50.0%) — 1 recovered by continuation "
         "(pass@1 above is first-attempt only) · 1 chain(s) infra/quota-cut (excluded — re-run)"
     ) in summary
     assert "continuation chain cut at round 1 (excluded — re-run)" in summary  # per-row note discloses too
