@@ -113,7 +113,7 @@ def _write_task(root, subdir, name, body="THEOREM TRUE", defs_body="Inv == TRUE"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{name}.tla").write_text(build_task_module(name, f"{name}Defs", body))
     (d / f"{name}Defs.tla").write_text(f"---- MODULE {name}Defs ----\n{defs_body}\n====\n")
-    return f"{subdir}/{name}.tla", {"context": [f"{subdir}/{name}Defs.tla"]}
+    return f"{subdir}/{name}.tla", {"spec_id": "Fixture.tla", "context": [f"{subdir}/{name}Defs.tla"]}
 
 
 def test_dataset_selection_bootstraps_from_flat_task_tree(tmp_path):
@@ -128,7 +128,7 @@ def test_dataset_selection_bootstraps_from_flat_task_tree(tmp_path):
 def test_layered_manifest_becomes_the_dataset_selection(tmp_path):
     _write_task(tmp_path, "Legacy", "Legacy_Thm")
     manifest_key = "Current/Current_Thm.tla"
-    (tmp_path / "manifest.json").write_text(json.dumps({manifest_key: {"context": []}}))
+    (tmp_path / "manifest.json").write_text(json.dumps({manifest_key: {"spec_id": "Fixture.tla", "context": []}}))
 
     assert load_dataset_task_keys(str(tmp_path)) == {manifest_key}
 
@@ -235,6 +235,39 @@ def test_positional_repository_run_keeps_overlapping_sibling_source_task(tmp_pat
     generate.main()
 
     assert set(json.loads((output / "manifest.json").read_text())) == set(existing)
+
+
+def test_custom_source_dir_is_used_for_specification_identity(tmp_path, monkeypatch):
+    source_root = tmp_path / "custom-source"
+    source = source_root / "Group" / "Spec.tla"
+    source.parent.mkdir(parents=True)
+    source.write_text("---- MODULE Spec ----\n====\n")
+    output = tmp_path / "benchmark"
+    observed_roots = []
+
+    def fake_process_file(_path, _audit_writer, _output_root, **kwargs):
+        observed_roots.append(kwargs["source_root"])
+        return 0
+
+    monkeypatch.setattr(generate, "process_file", fake_process_file)
+    monkeypatch.setattr(generate, "_finalize_layered", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate.py",
+            "--layered",
+            "--skip-gates",
+            "--source-dir",
+            str(source_root),
+            "--output-dir",
+            str(output),
+        ],
+    )
+
+    generate.main()
+
+    assert observed_roots == [str(source_root)]
 
 
 def test_unnamed_target_preserves_an_existing_line_based_key():
@@ -682,7 +715,7 @@ def _triviality_env(tmp_path, monkeypatch, verdicts):
         return verdicts[len(calls) - 1]
 
     monkeypatch.setattr(triviality_audit, "check_task", fake_check_task)
-    return {"Group/Group_Thm.tla": {"context": []}}, calls
+    return {"Group/Group_Thm.tla": {"spec_id": "Fixture.tla", "context": []}}, calls
 
 
 def test_a_timed_out_task_is_rechecked_alone_on_the_graders_budget(tmp_path, monkeypatch):

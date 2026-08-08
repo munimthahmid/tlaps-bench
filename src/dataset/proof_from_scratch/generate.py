@@ -88,8 +88,9 @@ Only `<task>.tla` is editable, and within it only the two marked regions:
 
 A suite-level `manifest.json` maps each task to the exact read-only modules
 assigned to it, so the evaluator never infers context by copying siblings and
-one task cannot inherit another task's target definitions. The marker strings
-and manifest schema are the contract in src/common/proof_from_scratch_contract.py;
+one task cannot inherit another task's target definitions. Each manifest entry
+also records the originating source specification. The marker strings and
+manifest schema are the contract in src/common/proof_from_scratch_contract.py;
 the two must stay byte-compatible.
 
 Only spec-goal targets extend the shared model; a pure lemma target keeps a
@@ -119,6 +120,7 @@ from dataset.proof_completion.generate import (  # noqa: E402
 )
 from dataset.sany_audit import gate as sany_gate  # noqa: E402
 from dataset.sany_audit import is_task_file  # noqa: E402
+from dataset.specification_identity import source_spec_id  # noqa: E402
 from dataset.triviality_audit import gate as triviality_gate  # noqa: E402
 
 KEYWORD_PATTERN = re.compile(r"^\s*(THEOREM|LEMMA|AXIOM|COROLLARY|PROPOSITION)\b")
@@ -1214,6 +1216,7 @@ def _emit_layered(
     manifest,
     audit_state,
     reference_task_keys,
+    source_root,
 ):
     """Emit the three-layer split + manifest entries for one source file.
 
@@ -1234,6 +1237,7 @@ def _emit_layered(
         return 0
 
     targets = [target for target, _module, _key in planned]
+    spec_id = source_spec_id(source_path, source_root)
     model_set, main_specs = compute_model_set(dump, targets)
 
     model_module = None
@@ -1307,7 +1311,10 @@ def _emit_layered(
                 )
 
         if manifest is not None:
-            manifest[task_key] = {"context": context}
+            manifest[task_key] = {
+                "spec_id": spec_id,
+                "context": context,
+            }
         if audit_state is not None:
             audit_state.setdefault("defs_owner", {}).setdefault(f"{subdir}/{defs_module}.tla", []).append(task_key)
 
@@ -1332,6 +1339,7 @@ def process_file(
     manifest=None,
     audit_state=None,
     reference_task_keys=None,
+    source_root=None,
 ):
     """Generate proof-from-scratch benchmarks for one source .tla file. Returns count emitted.
 
@@ -1486,6 +1494,7 @@ def process_file(
             manifest,
             audit_state,
             reference_task_keys,
+            source_root or SOURCE_ROOT,
         )
 
     # Shared-model mode: emit one proof-free `<module>.tla` model and have
@@ -1599,7 +1608,7 @@ def main():
         action="store_true",
         help="Split each task into <base>Model.tla + <task>Defs.tla + "
         "<task>.tla (editable, with helper/proof markers) and write "
-        "manifest.json mapping each task to its exact read-only context "
+        "manifest.json mapping each task to its source specification and exact read-only context "
         "(Issue #64 / PR #71 contract). For the repository source tree, "
         "the existing dataset/manifest supplies the vetted target selection. "
         "Implies the shared-model split.",
@@ -1620,6 +1629,7 @@ def main():
 
     # Scan unfiltered, then select: a filtered run needs every possible source to
     # tell a regenerated task's source from one it skipped.
+    source_root = SOURCE_ROOT
     if args.files:
         all_targets, repository_sources = positional_targets(args.files, SOURCE_ROOT)
         if args.layered and not repository_sources and any(subdir is not None for _, subdir in all_targets):
@@ -1630,6 +1640,7 @@ def main():
         ownership_targets = scan_source_targets(SOURCE_ROOT) if repository_sources else all_targets
     else:
         src_root = os.path.abspath(args.source_dir)
+        source_root = src_root
         repository_sources = os.path.realpath(src_root) == os.path.realpath(SOURCE_ROOT)
         all_targets = scan_source_targets(src_root)
         ownership_targets = all_targets
@@ -1673,6 +1684,7 @@ def main():
                     manifest=manifest,
                     audit_state=audit_state,
                     reference_task_keys=reference_task_keys,
+                    source_root=source_root,
                 )
             except Exception as e:
                 audit_writer.write(f"[audit] {path}: ERROR {e!r}\n")

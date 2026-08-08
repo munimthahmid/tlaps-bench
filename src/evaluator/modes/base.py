@@ -88,6 +88,15 @@ class Mode(ABC):  # noqa: B024 - ABC used as a non-instantiable base marker; sub
             files = [f for f in files if any(p in f for p in patterns)]
         return files
 
+    def specification_ids(self) -> dict[str, str] | None:
+        """Return task ID to specification ID mappings for strict suites.
+
+        Legacy proof-completion suites have no versioned manifest, so they keep
+        the historical task-micro score and return ``None``.
+        """
+
+        return None
+
     def get_dependencies(self, benchmark_path: str) -> list[str]:
         """Sibling .tla files the agent's workspace needs alongside the target.
 

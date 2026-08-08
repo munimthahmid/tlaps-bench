@@ -61,8 +61,9 @@ def test_loads_sorted_tasks_and_preserves_exact_context_order(tmp_path):
     _write_manifest(
         suite,
         {
-            "Zed/Zed_Target.tla": {"context": []},
+            "Zed/Zed_Target.tla": {"spec_id": "Fixture.tla", "context": []},
             "Alpha/Alpha_Target.tla": {
+                "spec_id": "Fixture.tla",
                 "context": ["Context/Scaffold.tla", "Context/Model.tla"],
             },
         },
@@ -72,14 +73,24 @@ def test_loads_sorted_tasks_and_preserves_exact_context_order(tmp_path):
 
     assert list(boundaries) == ["Alpha/Alpha_Target.tla", "Zed/Zed_Target.tla"]
     assert boundaries["Alpha/Alpha_Target.tla"].task_path == task_a
+    assert boundaries["Alpha/Alpha_Target.tla"].spec_id == "Fixture.tla"
     assert boundaries["Alpha/Alpha_Target.tla"].context_paths == (scaffold, model)
     assert boundaries["Zed/Zed_Target.tla"].task_path == task_z
+
+
+def test_manifest_requires_a_specification_identity(tmp_path):
+    suite = tmp_path / "proof-completion"
+    _write_task(suite, "Task.tla")
+    _write_manifest(suite, {"Task.tla": {"context": []}})
+
+    with pytest.raises(ManifestError, match="exactly 'spec_id' and 'context'"):
+        load_proof_completion_manifest(suite)
 
 
 def test_task_requires_exact_proof_markers(tmp_path):
     suite = tmp_path / "proof-completion"
     _write_module(suite, "Task.tla", body="THEOREM Target == TRUE\nPROOF OBVIOUS\n")
-    _write_manifest(suite, {"Task.tla": {"context": []}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": []}})
 
     with pytest.raises(ManifestError, match="Task.tla.*invalid editable regions"):
         load_proof_completion_manifest(suite)
@@ -92,7 +103,7 @@ def test_task_cannot_expose_a_helper_region(tmp_path):
         "Task.tla",
         body=f"{BEGIN_AGENT_HELPERS}\nHelper == TRUE\n{END_AGENT_HELPERS}\n",
     )
-    _write_manifest(suite, {"Task.tla": {"context": []}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": []}})
 
     with pytest.raises(ManifestError, match="must not contain an AGENT HELPERS region"):
         load_proof_completion_manifest(suite)
@@ -103,7 +114,7 @@ def test_manifest_context_must_cover_transitive_references(tmp_path):
     _write_task(suite, "Task.tla", body="EXTENDS Model\n")
     _write_module(suite, "Model.tla", body="EXTENDS Missing\n")
     _write_module(suite, "Missing.tla")
-    _write_manifest(suite, {"Task.tla": {"context": ["Model.tla"]}})
+    _write_manifest(suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": ["Model.tla"]}})
 
     with pytest.raises(ManifestError, match="incomplete context.*Missing"):
         load_proof_completion_manifest(suite)

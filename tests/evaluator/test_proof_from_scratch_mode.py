@@ -62,8 +62,8 @@ def test_discovers_only_sorted_manifest_tasks(tmp_path):
     _write_manifest(
         suite,
         {
-            "Zed/Zed_Target.tla": {"context": []},
-            "Alpha/Alpha_Target.tla": {"context": []},
+            "Zed/Zed_Target.tla": {"spec_id": "Fixture.tla", "context": []},
+            "Alpha/Alpha_Target.tla": {"spec_id": "Fixture.tla", "context": []},
         },
     )
 
@@ -82,9 +82,9 @@ def test_filters_manifest_tasks_with_existing_comma_separated_substrings(tmp_pat
     _write_manifest(
         suite,
         {
-            "Alpha/Alpha_Target.tla": {"context": []},
-            "Beta/Beta_Target.tla": {"context": []},
-            "Gamma/Gamma_Target.tla": {"context": []},
+            "Alpha/Alpha_Target.tla": {"spec_id": "Fixture.tla", "context": []},
+            "Beta/Beta_Target.tla": {"spec_id": "Fixture.tla", "context": []},
+            "Gamma/Gamma_Target.tla": {"spec_id": "Fixture.tla", "context": []},
         },
     )
 
@@ -105,19 +105,21 @@ def test_returns_only_manifest_context_in_declared_order(tmp_path):
         suite,
         {
             "Example/Example_Target.tla": {
+                "spec_id": "Fixture.tla",
                 "context": ["Context/ModelB.tla", "Context/ModelA.tla"],
             }
         },
     )
 
     assert _mode(tmp_path).get_dependencies(str(target)) == [str(context_b), str(context_a)]
+    assert _mode(tmp_path).specification_ids() == {"Example/Example_Target.tla": "Fixture.tla"}
 
 
 def test_rejects_dependency_lookup_for_undeclared_file(tmp_path):
     suite = tmp_path / "proof-from-scratch"
     _write_task(suite, "Example/Example_Target.tla")
     undeclared = _write_module(suite, "Example/Other_Target.tla")
-    _write_manifest(suite, {"Example/Example_Target.tla": {"context": []}})
+    _write_manifest(suite, {"Example/Example_Target.tla": {"spec_id": "Fixture.tla", "context": []}})
 
     with pytest.raises(ValueError, match="is not declared"):
         _mode(tmp_path).get_dependencies(str(undeclared))
@@ -136,7 +138,7 @@ def test_mode_remains_pickleable_after_manifest_discovery(tmp_path):
     context = _write_module(suite, "Context/Model.tla")
     _write_manifest(
         suite,
-        {"Example/Example_Target.tla": {"context": ["Context/Model.tla"]}},
+        {"Example/Example_Target.tla": {"spec_id": "Fixture.tla", "context": ["Context/Model.tla"]}},
     )
     mode = _mode(tmp_path)
     mode.get_benchmark_files()

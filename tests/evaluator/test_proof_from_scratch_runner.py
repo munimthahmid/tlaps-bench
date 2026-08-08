@@ -67,7 +67,9 @@ def test_runner_grades_from_pre_agent_canonical_bytes(tmp_path, monkeypatch):
     model.write_text(model_source)
     sibling.write_text(_module("Sibling_Task", "THEOREM Leak == TRUE\nPROOF OBVIOUS\n"))
     unrelated.write_text(_module("UnrelatedDefs", "Leak == TRUE\n"))
-    (suite / "manifest.json").write_text(json.dumps({"Suite/Task.tla": {"context": ["Context/Model.tla"]}}))
+    (suite / "manifest.json").write_text(
+        json.dumps({"Suite/Task.tla": {"spec_id": "Fixture.tla", "context": ["Context/Model.tla"]}})
+    )
 
     mode = ProofFromScratch(str(tmp_path / "benchmark"), "/checker")
     backend = _Backend()
@@ -153,7 +155,9 @@ def test_cli_captures_all_replay_inputs_before_backend_setup(tmp_path, monkeypat
     model_source = _module("Model", "Value == TRUE\n")
     task.write_text(task_source)
     model.write_text(model_source)
-    (suite / "manifest.json").write_text(json.dumps({"Suite/Task.tla": {"context": ["Context/Model.tla"]}}))
+    (suite / "manifest.json").write_text(
+        json.dumps({"Suite/Task.tla": {"spec_id": "Fixture.tla", "context": ["Context/Model.tla"]}})
+    )
 
     mode = ProofFromScratch(str(benchmark_root), "/checker")
     backend = _Backend()

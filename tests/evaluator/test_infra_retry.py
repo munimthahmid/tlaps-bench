@@ -211,6 +211,35 @@ def test_summary_excludes_non_genuine_results_from_pass_rate(tmp_path):
     assert "INFRA_ERROR (excluded — re-run)" in summary
 
 
+def test_summary_uses_specification_macro_as_primary_for_manifest_suites(tmp_path):
+    results = [
+        _result("A/One.tla", "PASS", mode="proof-completion"),
+        _result("A/Two.tla", "FAIL", mode="proof-completion"),
+        _result("B/Only.tla", "PASS", mode="proof-completion"),
+        _result("Removed/Old.tla", "PASS", mode="proof-completion"),
+    ]
+    specification_ids = {
+        ("proof-completion", "A/One.tla"): "A/A.tla",
+        ("proof-completion", "A/Two.tla"): "A/A.tla",
+        ("proof-completion", "B/Only.tla"): "B/B.tla",
+    }
+
+    runner.update_summary(
+        results,
+        str(tmp_path),
+        total_benchmarks=4,
+        backend_name="copilot",
+        mode_name="proof-completion",
+        specification_ids=specification_ids,
+    )
+
+    summary = (tmp_path / "summary.md").read_text()
+    assert "**Specification-macro pass rate**: 75.0% across 2 specifications" in summary
+    assert "**Task-micro pass rate**: 2/3 (66.7%)" in summary
+    assert "**All leaves complete**: 1/2 specifications (50.0%)" in summary
+    assert "**Non-applicable results**: 1 not present in the active manifest (excluded)" in summary
+
+
 def test_summary_reports_time_and_equivalent_cost_without_zero_filling(tmp_path):
     results = [
         _result("priced.tla", "PASS", time_secs=1.25, equivalent_cost_usd=0.125),

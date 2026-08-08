@@ -62,8 +62,9 @@ def test_strict_mode_discovers_only_manifest_tasks_and_exact_context(tmp_path):
     _write_manifest(
         suite,
         {
-            "Zed/Zed_Target.tla": {"context": []},
+            "Zed/Zed_Target.tla": {"spec_id": "Fixture.tla", "context": []},
             "Alpha/Alpha_Target.tla": {
+                "spec_id": "Fixture.tla",
                 "context": ["Context/ModelB.tla", "Context/ModelA.tla"],
             },
         },
@@ -76,6 +77,10 @@ def test_strict_mode_discovers_only_manifest_tasks_and_exact_context(tmp_path):
     assert mode.canonical_replay_required
     assert mode.get_benchmark_files() == [str(task_a), str(task_z)]
     assert mode.get_dependencies(str(task_a)) == [str(context_b), str(context_a)]
+    assert mode.specification_ids() == {
+        "Alpha/Alpha_Target.tla": "Fixture.tla",
+        "Zed/Zed_Target.tla": "Fixture.tla",
+    }
     assert not mode.is_benchmark_file(str(undeclared))
     assert mode.get_benchmark_files("Alpha_Target, Zed/") == [str(task_a), str(task_z)]
 
@@ -83,7 +88,7 @@ def test_strict_mode_discovers_only_manifest_tasks_and_exact_context(tmp_path):
 def test_strict_mode_is_pickleable_after_discovery(tmp_path):
     suite = tmp_path / "proof-completion"
     task = _write_task(suite, "Example/Example_Target.tla")
-    _write_manifest(suite, {"Example/Example_Target.tla": {"context": []}})
+    _write_manifest(suite, {"Example/Example_Target.tla": {"spec_id": "Fixture.tla", "context": []}})
     mode = _mode(tmp_path)
     mode.get_benchmark_files()
 
@@ -103,6 +108,7 @@ def test_absent_manifest_uses_legacy_layout_with_one_warning(tmp_path, capsys):
     assert mode.get_dependencies(str(task)) == [str(dependency)]
     assert not mode.read_only_dependencies
     assert not mode.canonical_replay_required
+    assert mode.specification_ids() is None
 
     warning = capsys.readouterr().err
     assert warning.count("using legacy unmarked proof-completion") == 1
@@ -148,7 +154,7 @@ def test_marker_in_symlinked_directory_cannot_downgrade_to_legacy(tmp_path):
 def test_strict_and_legacy_modes_select_matching_prompts(tmp_path):
     strict_suite = tmp_path / "strict" / "proof-completion"
     _write_task(strict_suite, "Task.tla")
-    _write_manifest(strict_suite, {"Task.tla": {"context": []}})
+    _write_manifest(strict_suite, {"Task.tla": {"spec_id": "Fixture.tla", "context": []}})
     legacy_suite = tmp_path / "legacy" / "proof-completion"
     legacy_suite.mkdir(parents=True)
 
@@ -166,7 +172,7 @@ def test_strict_cli_captures_all_inputs_before_backend_setup(tmp_path, monkeypat
     suite = benchmark_root / "proof-completion"
     task = _write_task(suite, "Suite/Task.tla", "EXTENDS Model\n")
     model = _write_module(suite, "Context/Model.tla", "Value == TRUE\n")
-    _write_manifest(suite, {"Suite/Task.tla": {"context": ["Context/Model.tla"]}})
+    _write_manifest(suite, {"Suite/Task.tla": {"spec_id": "Fixture.tla", "context": ["Context/Model.tla"]}})
     task_source = task.read_bytes()
     model_source = model.read_bytes()
     mode = ProofCompletion(str(benchmark_root), "/checker")

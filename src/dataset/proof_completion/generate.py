@@ -30,11 +30,11 @@ marked proof region is editable:
 
     \\* BEGIN AGENT PROOF / \\* END AGENT PROOF     the proof
 
-A suite-level `manifest.json` maps each task to the exact read-only modules
-assigned to it, so the evaluator never infers context by copying siblings. The
-marker strings and manifest schema come from `src/common/task_contract.py` —
-the same contract the evaluator parses — and every emitted task is re-read
-through it before the manifest is written.
+A suite-level `manifest.json` maps each task to its originating specification
+and the exact read-only modules assigned to it, so the evaluator never infers
+context by copying siblings. The marker strings and manifest schema come from
+`src/common/task_contract.py` — the same contract the evaluator parses — and
+every emitted task is re-read through it before the manifest is written.
 """
 
 import glob
@@ -52,6 +52,7 @@ from common.proof_completion_contract import (
     parse_proof_completion_region,
 )
 from common.task_contract import MANIFEST_FILENAME
+from dataset.specification_identity import source_spec_id
 
 COMMUNITY_MODULES = _tla_modules.COMMUNITY_MODULES
 RESOLVABLE_MODULES = _tla_modules.RESOLVABLE_MODULES
@@ -1490,6 +1491,7 @@ def emit_layered_source(
     manifest,
     audit_state,
     reference_task_keys=None,
+    source_root=None,
 ):
     """Emit the layered split + manifest entries for one source file.
 
@@ -1518,6 +1520,7 @@ def emit_layered_source(
     if not planned:
         return 0
     targets = [target for target, _module, _key in planned]
+    spec_id = source_spec_id(source_path, source_root or SOURCE_ROOT)
 
     os.makedirs(out_dir, exist_ok=True)
     written = audit_state.setdefault("written", {})
@@ -1577,7 +1580,10 @@ def emit_layered_source(
         if model_module:
             context.append(f"{subdir}/{model_module}.tla")
         context += write_task_dependencies(sm, dump, source_path, out_dir, subdir, task_module, audit_writer, written)
-        manifest[task_key] = {"context": sorted(set(context))}
+        manifest[task_key] = {
+            "spec_id": spec_id,
+            "context": sorted(set(context)),
+        }
         audit_state.setdefault("scaffold_owner", {}).setdefault(f"{subdir}/{scaffold_module}.tla", []).append(task_key)
 
         count += 1
@@ -1958,6 +1964,7 @@ def generate_layered(output_root=None, source_dir=None, filter_substring=None, f
                         manifest,
                         audit_state,
                         reference_task_keys,
+                        source_root=SOURCE_ROOT if files else source_dir,
                     )
                 except Exception as e:
                     audit_writer.write(f"[audit] {path}: ERROR {e!r}\n")

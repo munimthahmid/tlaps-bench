@@ -53,6 +53,7 @@ class TaskBoundary:
     """One editable task and the complete local context assigned to it."""
 
     task_key: str
+    spec_id: str
     task_path: Path
     context_paths: tuple[Path, ...]
 
@@ -187,6 +188,38 @@ def _relative_tla_path(value: str, *, label: str) -> PurePosixPath:
     return path
 
 
+def _manifest_specification_id(task_key: str, entry: Any) -> str:
+    if type(entry) is not dict or set(entry) != {"spec_id", "context"}:
+        raise ManifestError(f"manifest entry {task_key!r} must be an object containing exactly 'spec_id' and 'context'")
+    spec_id = entry["spec_id"]
+    if type(spec_id) is not str:
+        raise ManifestError(f"manifest entry {task_key!r} field 'spec_id' must be a string")
+    _relative_tla_path(spec_id, label=f"manifest entry {task_key!r} field 'spec_id'")
+    return spec_id
+
+
+def load_manifest_specification_ids(suite_root: Path, *, suite_name: str) -> Mapping[str, str]:
+    """Load only the stable task-to-specification identities needed to score.
+
+    This validates the versioned manifest keys and identity fields without
+    parsing every TLA+ file. Full task execution continues to use
+    :func:`load_task_manifest` and its stronger file/content validation.
+    """
+
+    root = _suite_root(Path(suite_root), suite_name=suite_name)
+    raw = _load_manifest_json(_resolve_manifest(root, suite_name=suite_name))
+    if type(raw) is not dict:
+        raise ManifestError(f"{suite_name} manifest root must be a JSON object")
+
+    specification_ids: dict[str, str] = {}
+    for task_key, entry in raw.items():
+        if type(task_key) is not str:
+            raise ManifestError(f"{suite_name} manifest task keys must be strings")
+        _relative_tla_path(task_key, label="manifest task key")
+        specification_ids[task_key] = _manifest_specification_id(task_key, entry)
+    return MappingProxyType(dict(sorted(specification_ids.items())))
+
+
 def _resolve_suite_file(root: Path, relative_path: PurePosixPath, *, label: str) -> Path:
     candidate = root.joinpath(*relative_path.parts)
     try:
@@ -294,7 +327,7 @@ def load_task_manifest(
     if type(raw) is not dict:
         raise ManifestError(f"{suite_name} manifest root must be a JSON object")
 
-    specifications: dict[str, tuple[Path, list[tuple[str, Path]]]] = {}
+    specifications: dict[str, tuple[str, Path, list[tuple[str, Path]]]] = {}
     task_paths: dict[Path, str] = {}
 
     for task_key, entry in raw.items():
@@ -308,8 +341,8 @@ def load_task_manifest(
             raise ManifestError(f"manifest tasks {previous_task!r} and {task_key!r} resolve to the same file")
         task_paths[task_path] = task_key
 
-        if type(entry) is not dict or set(entry) != {"context"}:
-            raise ManifestError(f"manifest entry {task_key!r} must be an object containing only 'context'")
+        spec_id = _manifest_specification_id(task_key, entry)
+
         context = entry["context"]
         if type(context) is not list:
             raise ManifestError(f"manifest entry {task_key!r} field 'context' must be a list")
@@ -340,12 +373,12 @@ def load_task_manifest(
             seen_context_paths.add(context_path)
             resolved_context.append((context_key, context_path))
 
-        specifications[task_key] = (task_path, resolved_context)
+        specifications[task_key] = (spec_id, task_path, resolved_context)
 
     boundaries: dict[str, TaskBoundary] = {}
     task_keys = set(specifications)
     for task_key in sorted(specifications):
-        task_path, context_entries = specifications[task_key]
+        spec_id, task_path, context_entries = specifications[task_key]
         context_paths: list[Path] = []
         for context_key, context_path in context_entries:
             if context_key == task_key or context_path == task_path:
@@ -360,6 +393,7 @@ def load_task_manifest(
         _validate_task_contract(task_key, modules, parse_task_regions=parse_task_regions)
         boundaries[task_key] = TaskBoundary(
             task_key=task_key,
+            spec_id=spec_id,
             task_path=task_path,
             context_paths=resolved_paths,
         )

@@ -52,6 +52,7 @@ from evaluator.modes import get_mode, list_modes
 from evaluator.modes.base import Mode
 from evaluator.score import (
     SCORERS,
+    applicable_manifest_results,
     continuation_interrupted,
     continuation_rate_line,
     is_non_genuine,
@@ -59,6 +60,8 @@ from evaluator.score import (
     is_skipped,
     n_non_genuine,
     n_skipped,
+    scope_specification_ids,
+    specification_score_lines,
     weighted_score,
 )
 from evaluator.termination import TerminationContext, TerminationReason, classify, startup_error_snippet
@@ -1003,7 +1006,7 @@ def _format_equivalent_cost(value: object) -> str:
     return f"${parsed:.6g}"
 
 
-def update_summary(results, output_dir, total_benchmarks, backend_name, mode_name):
+def update_summary(results, output_dir, total_benchmarks, backend_name, mode_name, specification_ids=None):
     """Incrementally update summary.md + results.json with current results."""
     with _summary_lock:
         supports_cost_time = backend_name in _COST_TIME_BACKENDS
@@ -1024,20 +1027,26 @@ def update_summary(results, output_dir, total_benchmarks, backend_name, mode_nam
         lines = []
         lines.append(f"# {backend_name} on {mode_name}\n")
         lines.append(f"**Date**: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        # Match `tlaps-bench score`: SKIP and non-genuine infra/quota-cut runs
-        # are excluded from the pass-rate numerator and denominator.
-        pass_pct, n_pass, scored = weighted_score(results, SCORERS["equal"])
-        n_skip = n_skipped(results)
-        non_genuine = n_non_genuine(results)
-        pass_line = f"**Pass rate**: {n_pass}/{scored} ({pass_pct:.1f}%)"
-        if n_skip:
-            pass_line += f" · {n_skip} skipped"
-        if non_genuine:
-            pass_line += f" · {non_genuine} infra/quota-cut (excluded — re-run)"
         lines.append(f"**Progress**: {total}/{total_benchmarks}")
-        lines.append(pass_line)
+        if specification_ids is None:
+            # Guarded legacy proof-completion suites have no identity manifest.
+            pass_pct, n_pass, scored = weighted_score(results, SCORERS["equal"])
+            n_skip = n_skipped(results)
+            non_genuine = n_non_genuine(results)
+            pass_line = f"**Pass rate**: {n_pass}/{scored} ({pass_pct:.1f}%)"
+            if n_skip:
+                pass_line += f" · {n_skip} skipped"
+            if non_genuine:
+                pass_line += f" · {non_genuine} infra/quota-cut (excluded — re-run)"
+            lines.append(pass_line)
+            continuation_results = results
+        else:
+            score_lines, specification_score = specification_score_lines(results, specification_ids)
+            lines.extend(score_lines)
+            n_pass = specification_score.tasks_passed
+            continuation_results = applicable_manifest_results(results, specification_ids)
         # Separate, clearly-labeled metric — the pass rate above stays pass@1.
-        cont_line = continuation_rate_line(results, SCORERS["equal"], n_pass)
+        cont_line = continuation_rate_line(continuation_results, SCORERS["equal"], n_pass)
         if cont_line:
             lines.append(cont_line)
         lines.append(
@@ -2250,8 +2259,13 @@ def main():
     mode = get_mode(args.mode, benchmark_root, checker_binary)
     try:
         benchmark_files = mode.get_benchmark_files(args.filter)
+        identity_loader = getattr(mode, "specification_ids", None)
+        task_specification_ids = identity_loader() if identity_loader is not None else None
     except TaskContractError as exc:
         parser.exit(2, f"{parser.prog}: error: {exc}\n")
+    specification_ids = (
+        scope_specification_ids(mode.name, task_specification_ids) if task_specification_ids is not None else None
+    )
     if not benchmark_files:
         if args.filter:
             parser.exit(
@@ -2475,7 +2489,7 @@ def main():
                 f"[{prior_done + i + 1}/{total_benchmarks}] {icon} {r['benchmark']} ({metrics})"
                 + (f" — {cont}" if cont else "")
             )
-            update_summary(results, output_dir, total_benchmarks, backend.name, mode.name)
+            update_summary(results, output_dir, total_benchmarks, backend.name, mode.name, specification_ids)
     else:
         with ProcessPoolExecutor(max_workers=args.jobs) as executor:
             futures = {executor.submit(run_single_benchmark, item): item for item in work_items}
@@ -2495,11 +2509,11 @@ def main():
                     f"[{prior_done + done_count}/{total_benchmarks}] {icon} {r['benchmark']} ({metrics})"
                     + (f" — {cont}" if cont else "")
                 )
-                update_summary(results, output_dir, total_benchmarks, backend.name, mode.name)
+                update_summary(results, output_dir, total_benchmarks, backend.name, mode.name, specification_ids)
 
     total_time = time.monotonic() - start_time
 
-    update_summary(results, output_dir, total_benchmarks, backend.name, mode.name)
+    update_summary(results, output_dir, total_benchmarks, backend.name, mode.name, specification_ids)
     report_path = os.path.join(output_dir, "summary.md")
 
     print(f"\n{'=' * 60}")
