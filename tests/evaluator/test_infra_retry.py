@@ -211,7 +211,7 @@ def test_summary_excludes_non_genuine_results_from_pass_rate(tmp_path):
     assert "INFRA_ERROR (excluded — re-run)" in summary
 
 
-def test_summary_uses_specification_macro_as_primary_for_manifest_suites(tmp_path):
+def test_summary_uses_strict_specification_pass_rate_as_primary_for_manifest_suites(tmp_path):
     results = [
         _result("A/One.tla", "PASS", mode="proof-completion"),
         _result("A/Two.tla", "FAIL", mode="proof-completion"),
@@ -234,9 +234,13 @@ def test_summary_uses_specification_macro_as_primary_for_manifest_suites(tmp_pat
     )
 
     summary = (tmp_path / "summary.md").read_text()
-    assert "**Specification-macro pass rate**: 75.0% across 2 specifications" in summary
-    assert "**Task-micro pass rate**: 2/3 (66.7%)" in summary
-    assert "**All leaves complete**: 1/2 specifications (50.0%)" in summary
+    primary = "**Specification pass rate (all leaves complete)**: 1/2 specifications (50.0%)"
+    task_level = "**Task-micro pass rate**: 2/3 (66.7%)"
+    specification_macro = "**Specification-macro pass rate**: 75.0% across 2 specifications"
+    assert primary in summary
+    assert task_level in summary
+    assert specification_macro in summary
+    assert summary.index(primary) < summary.index(task_level) < summary.index(specification_macro)
     assert "**Non-applicable results**: 1 not present in the active manifest (excluded)" in summary
 
 

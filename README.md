@@ -88,9 +88,9 @@ uv run tlaps-bench run --jobs 10 --timeout 7200
 uv run tlaps-bench run --mode proof-from-scratch --jobs 10
 ```
 
-Each run writes `results.json` and `summary.md` (with specification-macro as the
-primary score and task-micro as a diagnostic); `uv run tlaps-bench score`
-(re)computes and compares scores. See the [scoring documentation](docs/USAGE.md#tlaps-bench-score)
+Each run writes `results.json` and `summary.md` (with specification pass rate as
+the primary score and task-level pass rate as a secondary metric); `uv run
+tlaps-bench score` (re)computes and compares scores. See the [scoring documentation](docs/USAGE.md#tlaps-bench-score)
 for the grouping rule and formulas. Use `--resume` with a fixed `--output-dir` to
 skip tasks already recorded as PASS, and `--force-build` to rebuild the image
 after changing source.

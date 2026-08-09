@@ -1,10 +1,10 @@
 """Scoring from results.json.
 
 A task passes iff check_verdict == "PASS"; CHEATING/FAIL/TIMEOUT/ERROR all count
-as not passed, and CHEATING is never shown as its own category. Specification
-macro is primary; the legacy equal-task scorer remains a diagnostic and CLI
-option. SKIP is dropped from scoring entirely (neither passed nor failed) and
-only reported as a side count.
+as not passed, and CHEATING is never shown as its own category. Strict
+specification pass rate is primary; task-level and specification-macro scores
+remain diagnostics. SKIP is dropped from scoring entirely (neither passed nor
+failed) and only reported as a side count.
 
 Run: PYTHONPATH=src python3 -m pytest tests/evaluator/test_score.py
 """
@@ -83,6 +83,7 @@ def test_specification_equal_preserves_partial_credit_without_task_count_bias():
 
     score = specification_equal_score(results, specification_ids)
 
+    assert score.specification_pass_pct == 50.0
     assert score.specification_macro_pct == 75.0  # mean(1/2, 1/1)
     assert score.task_micro_pct == pytest.approx(66.6667)
     assert (score.tasks_passed, score.applicable_tasks) == (2, 3)
@@ -120,7 +121,7 @@ def test_specification_equal_excludes_non_applicable_and_unscored_results():
     assert score.non_applicable_results == 1
 
 
-def test_specification_scorecard_keeps_both_secondary_diagnostics():
+def test_specification_scorecard_shows_strict_primary_before_secondary_diagnostics():
     specification_ids = scope_specification_ids(
         "proof-completion",
         {
@@ -138,9 +139,13 @@ def test_specification_scorecard_keeps_both_secondary_diagnostics():
 
     md = scorecard_md(run, EQUAL, SPECIFICATION_EQUAL, specification_ids)
 
-    assert "**Specification-macro pass rate**: 75.0% across 2 specifications" in md
-    assert "**Task-micro pass rate**: 2/3 (66.7%)" in md
-    assert "**All leaves complete**: 1/2 specifications (50.0%)" in md
+    primary = "**Specification pass rate (all leaves complete)**: 1/2 specifications (50.0%)"
+    task_level = "**Task-micro pass rate**: 2/3 (66.7%)"
+    specification_macro = "**Specification-macro pass rate**: 75.0% across 2 specifications"
+    assert primary in md
+    assert task_level in md
+    assert specification_macro in md
+    assert md.index(primary) < md.index(task_level) < md.index(specification_macro)
     assert "## By module (task micro)" in md
     assert "| **Total** | **2** | **3** | **66.7%** |" in md
 
@@ -166,8 +171,8 @@ def test_specification_comparison_shows_primary_and_secondary_scores():
 
     md = comparison_md(runs, EQUAL, SPECIFICATION_EQUAL, specification_ids)
 
-    assert "| Run | Backend | Mode | Specification macro | Task micro | All leaves complete |" in md
-    assert "| one | codex | proof-completion | 75.0% | 2/3 (66.7%) | 1/2 |" in md
+    assert "| Run | Backend | Mode | Specification pass rate | Task pass rate | Specification macro |" in md
+    assert "| one | codex | proof-completion | 1/2 (50.0%) | 2/3 (66.7%) | 75.0% |" in md
 
 
 def test_scorecard_module_breakdown_and_no_cheating_row():
@@ -617,6 +622,7 @@ def test_main_single_prints_scorecard(tmp_path, monkeypatch, capsys):
     assert main() == 0
     out = capsys.readouterr().out
     assert "# Scorecard" in out
+    assert "**Specification pass rate (all leaves complete)**: 0/1 specification (0.0%)" in out
     assert "**Specification-macro pass rate**: 50.0% across 1 specification" in out
     assert "**Task-micro pass rate**: 1/2 (50.0%)" in out
 

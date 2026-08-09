@@ -33,12 +33,10 @@ infra/quota before resolving is interrupted, not failed: like a non-genuine
 first attempt it is excluded from the continuation rate and reported separately
 (see ``continuation_interrupted``).
 
-The primary score gives every represented source specification equal weight.
-For each specification, it computes the fraction of applicable selected tasks
-that passed, then averages those fractions. This preserves partial credit while
-preventing specifications with many extracted tasks from dominating the score.
-The historical task-micro pass rate and the fraction of specifications whose
-selected tasks all passed remain visible as secondary diagnostics.
+The primary score is the strict specification pass rate. A represented source
+specification passes only when all of its applicable selected tasks pass. The
+task-level pass rate and specification-macro partial-credit average remain
+visible as secondary diagnostics.
 
 The legacy pluggable task scorer assigns a non-negative weight to each task;
 the score of a group of tasks is
@@ -83,8 +81,9 @@ SpecificationKey = tuple[str, str]
 
 @dataclass(frozen=True)
 class SpecificationScore:
-    """Primary and secondary scores over one selected result cohort."""
+    """Specification pass rate and secondary diagnostics for one cohort."""
 
+    specification_pass_pct: float
     specification_macro_pct: float
     task_micro_pct: float
     tasks_passed: int
@@ -201,7 +200,7 @@ def specification_equal_score(
     specification_ids: Mapping[SpecificationKey, str],
     passed: Callable[[dict], bool] = is_pass,
 ) -> SpecificationScore:
-    """Score selected, applicable tasks with equal total weight per specification.
+    """Score selected, applicable tasks at specification and task levels.
 
     A result is applicable when its ``(mode, benchmark)`` identity exists in the
     active versioned manifest. Results for tasks removed from a later manifest
@@ -238,7 +237,11 @@ def specification_equal_score(
     complete_specifications = sum(
         1 for grouped in by_specification.values() if all(passed(result) for result in grouped)
     )
+    specification_pass_pct = (
+        100.0 * complete_specifications / represented_specifications if represented_specifications else 0.0
+    )
     return SpecificationScore(
+        specification_pass_pct=specification_pass_pct,
         specification_macro_pct=specification_macro_pct,
         task_micro_pct=task_micro_pct,
         tasks_passed=tasks_passed,
@@ -273,17 +276,13 @@ def specification_score_lines(
         task_line += f" · {non_genuine} infra/quota-cut (excluded — re-run)"
 
     specification_word = "specification" if score.represented_specifications == 1 else "specifications"
-    complete_pct = (
-        100.0 * score.complete_specifications / score.represented_specifications
-        if score.represented_specifications
-        else 0.0
-    )
     lines = [
+        f"**Specification pass rate (all leaves complete)**: "
+        f"{score.complete_specifications}/{score.represented_specifications} "
+        f"{specification_word} ({score.specification_pass_pct:.1f}%)",
+        task_line,
         f"**Specification-macro pass rate**: {score.specification_macro_pct:.1f}% "
         f"across {score.represented_specifications} {specification_word}",
-        task_line,
-        f"**All leaves complete**: {score.complete_specifications}/{score.represented_specifications} "
-        f"{specification_word} ({complete_pct:.1f}%)",
     ]
     if score.non_applicable_results:
         lines.append(
@@ -507,7 +506,7 @@ def comparison_md(
         lines += [f"**Scoring**: {scoring_name} (weighted)", ""]
     show_equivalent_cost = any(_has_equivalent_cost(run["results"]) for run in runs)
     score_columns = (
-        "Specification macro | Task micro | All leaves complete"
+        "Specification pass rate | Task pass rate | Specification macro"
         if specification_ids is not None
         else "Pass % | Passed/Total"
     )
@@ -565,10 +564,11 @@ def comparison_md(
             if specification_score.non_applicable_results:
                 score_notes += f" (+{specification_score.non_applicable_results} non-applicable)"
             score_cells = (
-                f"{specification_score.specification_macro_pct:.1f}% | "
-                f"{n_pass}/{n_total} ({specification_score.task_micro_pct:.1f}%){score_notes} | "
                 f"{specification_score.complete_specifications}/"
-                f"{specification_score.represented_specifications}"
+                f"{specification_score.represented_specifications} "
+                f"({specification_score.specification_pass_pct:.1f}%) | "
+                f"{n_pass}/{n_total} ({specification_score.task_micro_pct:.1f}%){score_notes} | "
+                f"{specification_score.specification_macro_pct:.1f}%"
             )
         row = f"| {run['id']} | {run['backend']} | {run['mode']} | {score_cells} | {in_tok:,}/{out_tok:,} | "
         if show_equivalent_cost:
@@ -595,14 +595,17 @@ def comparison_md(
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="tlaps-bench score",
-        description="Score benchmark results (specification macro plus diagnostics) from results.json.",
+        description="Score benchmark results (strict specification pass rate plus diagnostics) from results.json.",
     )
     parser.add_argument("paths", nargs="+", help="One or more results.json files or run directories")
     parser.add_argument(
         "--scoring",
         default=SPECIFICATION_EQUAL,
         choices=[SPECIFICATION_EQUAL, *sorted(SCORERS)],
-        help="Scoring scheme (default: specification-equal; 'equal' retains legacy task-micro scoring)",
+        help=(
+            "Scoring scheme (default: specification-equal with strict specification pass rate primary; "
+            "'equal' retains legacy task-level scoring)"
+        ),
     )
     args = parser.parse_args()
 
