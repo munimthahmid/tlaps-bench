@@ -310,22 +310,24 @@ uv run tlaps-bench score results/proof-from-scratch/pi/20260626_220712/results.j
 uv run tlaps-bench score results/proof-completion/*/results.json
 ```
 
+Strict comparisons require every run to contain the same applicable task IDs.
+
 Each manifest entry maps its mode-relative task ID to the originating `.tla` path under `source/` (`spec_id`). Tasks from the same source module form one scoring group.
 
-The default primary score gives every represented source specification equal weight while preserving partial credit:
+The default primary score is the specification pass rate: a represented specification passes only when all of its selected tasks pass.
 
 ```text
-spec_score = passed selected tasks / applicable selected tasks
-overall_score = mean(spec_score)
+spec_pass = 1 if all applicable selected tasks pass, otherwise 0
+overall_score = completed specifications / represented specifications
 ```
 
 Reports show three scores:
 
-- **Specification-macro** (primary): the average above.
-- **Task-micro**: passed applicable tasks divided by all applicable tasks.
-- **All-leaves-complete**: specifications whose selected tasks all passed.
+- **Specification pass rate** (primary, all leaves complete): specifications whose selected tasks all passed.
+- **Task-level pass rate** (secondary): passed applicable tasks divided by all applicable tasks.
+- **Specification-macro** (secondary): the average per-specification task pass rate, preserving partial credit.
 
-`SKIP`, infrastructure-cut, and removed tasks are excluded and reported separately. Pass `--scoring equal` for the legacy task-micro-primary output.
+`SKIP`, infrastructure-cut, and removed tasks are excluded and reported separately. Pass `--scoring equal` for the legacy task-level-only output.
 
 ### `tlaps-bench validate`
 

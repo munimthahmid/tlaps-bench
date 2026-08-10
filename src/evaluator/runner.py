@@ -1150,6 +1150,11 @@ def update_summary(results, output_dir, total_benchmarks, backend_name, mode_nam
             continuation_results = results
         else:
             score_lines, specification_score = specification_score_lines(results, specification_ids)
+            if total < total_benchmarks:
+                score_lines[0] = (
+                    "**Specification pass rate**: pending until the run completes "
+                    f"({total}/{total_benchmarks} tasks finished)"
+                )
             lines.extend(score_lines)
             n_pass = specification_score.tasks_passed
             continuation_results = applicable_manifest_results(results, specification_ids)
