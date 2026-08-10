@@ -175,6 +175,30 @@ def test_specification_comparison_shows_primary_and_secondary_scores():
     assert "| one | codex | proof-completion | 1/2 (50.0%) | 2/3 (66.7%) | 75.0% |" in md
 
 
+def test_specification_comparison_rejects_different_task_cohorts():
+    specification_ids = scope_specification_ids("proof-completion", {"A/One.tla": "A/A.tla", "A/Two.tla": "A/A.tla"})
+    runs = [
+        {
+            "id": "one",
+            "backend": "codex",
+            "mode": "proof-completion",
+            "results": [_r("PASS", mode="proof-completion", benchmark="A/One.tla")],
+        },
+        {
+            "id": "two",
+            "backend": "codex",
+            "mode": "proof-completion",
+            "results": [
+                _r("PASS", mode="proof-completion", benchmark="A/One.tla"),
+                _r("PASS", mode="proof-completion", benchmark="A/Two.tla"),
+            ],
+        },
+    ]
+
+    with pytest.raises(ValueError, match="different applicable task cohorts"):
+        comparison_md(runs, EQUAL, SPECIFICATION_EQUAL, specification_ids)
+
+
 def test_scorecard_module_breakdown_and_no_cheating_row():
     results = [_r("PASS", module="A"), _r("CHEATING", module="A"), _r("PASS", module="B")]
     run = {"path": "x/results.json", "id": "x", "backend": "codex", "mode": "proof-completion", "results": results}
@@ -652,6 +676,28 @@ def test_main_multiple_prints_comparison(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["tlaps-bench score", d1, d2])
     assert main() == 0
     assert "# Comparison — 2 runs" in capsys.readouterr().out
+
+
+def test_main_reports_mismatched_comparison_cohorts(tmp_path, monkeypatch, capsys):
+    d1 = _write_run(
+        tmp_path,
+        "run1",
+        [_r("PASS", backend="codex", mode="proof-completion", benchmark="A/One.tla")],
+    )
+    d2 = _write_run(
+        tmp_path,
+        "run2",
+        [
+            _r("PASS", backend="codex", mode="proof-completion", benchmark="A/One.tla"),
+            _r("PASS", backend="codex", mode="proof-completion", benchmark="A/Two.tla"),
+        ],
+    )
+    specification_ids = scope_specification_ids("proof-completion", {"A/One.tla": "A/A.tla", "A/Two.tla": "A/A.tla"})
+    monkeypatch.setattr("evaluator.score.load_current_specification_ids", lambda _modes: specification_ids)
+    monkeypatch.setattr(sys, "argv", ["tlaps-bench score", d1, d2])
+
+    assert main() == 1
+    assert "different applicable task cohorts" in capsys.readouterr().err
 
 
 def test_main_missing_path_exits_1(tmp_path, monkeypatch, capsys):

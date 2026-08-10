@@ -501,6 +501,20 @@ def comparison_md(
     specification_ids: Mapping[SpecificationKey, str] | None = None,
 ) -> str:
     """Markdown comparison table across several runs (one row per run)."""
+    if specification_ids is not None and runs:
+        reference = {
+            key for result in runs[0]["results"] if (key := _result_specification_key(result)) in specification_ids
+        }
+        for run in runs[1:]:
+            cohort = {
+                key for result in run["results"] if (key := _result_specification_key(result)) in specification_ids
+            }
+            if cohort != reference:
+                raise ValueError(
+                    "cannot compare runs with different applicable task cohorts: "
+                    f"{runs[0]['id']} has {len(reference)} task IDs, {run['id']} has {len(cohort)}"
+                )
+
     lines = [f"# Comparison — {len(runs)} runs", ""]
     if scoring_name not in {"equal", SPECIFICATION_EQUAL}:
         lines += [f"**Scoring**: {scoring_name} (weighted)", ""]
@@ -627,10 +641,16 @@ def main() -> int:
             sys.stderr.write(f"tlaps-bench score: {e}\n")
             return 1
 
-    if len(runs) == 1:
-        print(scorecard_md(runs[0], weight, args.scoring, specification_ids))
-    else:
-        print(comparison_md(runs, weight, args.scoring, specification_ids))
+    try:
+        rendered = (
+            scorecard_md(runs[0], weight, args.scoring, specification_ids)
+            if len(runs) == 1
+            else comparison_md(runs, weight, args.scoring, specification_ids)
+        )
+    except ValueError as e:
+        sys.stderr.write(f"tlaps-bench score: {e}\n")
+        return 1
+    print(rendered)
     return 0
 
 

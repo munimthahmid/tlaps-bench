@@ -264,6 +264,8 @@ uv run tlaps-bench score results/proof-from-scratch/pi/20260626_220712/results.j
 uv run tlaps-bench score results/proof-completion/*/results.json
 ```
 
+Strict comparisons require every run to contain the same applicable task IDs.
+
 Each manifest entry maps its mode-relative task ID to the originating `.tla` path under `source/` (`spec_id`). Tasks from the same source module form one scoring group.
 
 The default primary score is the specification pass rate: a represented specification passes only when all of its selected tasks pass.
