@@ -299,6 +299,11 @@ CLAUDE.md
 AGENTS.md
 .pi
 .kiro
-.claude
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/tlaps-task-audit
 .ralph
 .cursor
+
+.notes/
