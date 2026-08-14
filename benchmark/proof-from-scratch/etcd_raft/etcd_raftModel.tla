@@ -512,6 +512,8 @@ Next == \/ NextAsync
 
 Spec == Init /\ [][Next]_vars
 
+ASSUME InitServerSubset == InitServer \subseteq Server
+
 ASSUME DistinctRoles == /\ Leader /= Candidate
                         /\ Candidate /= Follower
                         /\ Follower /= Leader
