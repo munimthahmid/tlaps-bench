@@ -1,4 +1,4 @@
-"""Regression coverage for the etcd Raft QuorumLog constant domain."""
+"""Regression coverage for the etcd Raft constant domain."""
 
 from __future__ import annotations
 
@@ -16,10 +16,12 @@ MODEL = TASK_DIR / "etcd_raftModel.tla"
 TLA2TOOLS = REPO / "lib" / "tla2tools.jar"
 COMMUNITY = REPO / "lib" / "community"
 SUBSET_ASSUMPTION = r"ASSUME InitServerSubset == InitServer \subseteq Server"
+FINITE_ASSUMPTION = r"ASSUME FiniteServers == IsFiniteSet(InitServer)"
+NIL_ASSUMPTION = r"ASSUME NilNotServer == Nil \notin Server"
 
 CONFIG = """\
 SPECIFICATION Spec
-INVARIANT QuorumLogInv
+INVARIANT {invariant}
 CHECK_DEADLOCK FALSE
 
 CONSTANTS
@@ -30,7 +32,7 @@ CONSTANTS
   Follower = "Follower"
   Candidate = "Candidate"
   Leader = "Leader"
-  Nil = 0
+  Nil = {nil}
   RequestVoteRequest = "RequestVoteRequest"
   RequestVoteResponse = "RequestVoteResponse"
   AppendEntriesRequest = "AppendEntriesRequest"
@@ -38,13 +40,21 @@ CONSTANTS
 """
 
 
-def _run_tlc(tmp_path: Path, *, init_server: str, server: str) -> str:
+def _run_tlc(
+    tmp_path: Path,
+    *,
+    init_server: str,
+    server: str,
+    nil: str = "0",
+    invariant: str = "QuorumLogInv",
+    module: str = "etcd_raft_QuorumLog",
+) -> str:
     if shutil.which("java") is None or not TLA2TOOLS.is_file() or not COMMUNITY.is_dir():
         pytest.skip("TLC dependencies are not installed; run make setup")
 
     tmp_path.mkdir()
     config = tmp_path / "QuorumLog.cfg"
-    config.write_text(CONFIG.format(init_server=init_server, server=server))
+    config.write_text(CONFIG.format(init_server=init_server, server=server, nil=nil, invariant=invariant))
     classpath = os.pathsep.join((str(TLA2TOOLS), str(COMMUNITY), str(TASK_DIR)))
     result = subprocess.run(
         [
@@ -54,7 +64,7 @@ def _run_tlc(tmp_path: Path, *, init_server: str, server: str) -> str:
             "tlc2.TLC",
             "-config",
             str(config),
-            "etcd_raft_QuorumLog",
+            module,
         ],
         cwd=tmp_path,
         capture_output=True,
@@ -64,13 +74,31 @@ def _run_tlc(tmp_path: Path, *, init_server: str, server: str) -> str:
     return result.stdout + result.stderr
 
 
-def test_quorum_log_rejects_initial_servers_outside_server(tmp_path):
-    assert SUBSET_ASSUMPTION in SOURCE.read_text()
-    assert SUBSET_ASSUMPTION in MODEL.read_text()
+def test_source_and_generated_model_preserve_domain_assumptions():
+    for path in (SOURCE, MODEL):
+        contents = path.read_text()
+        assert SUBSET_ASSUMPTION in contents
+        assert FINITE_ASSUMPTION in contents
+        assert NIL_ASSUMPTION in contents
 
+
+def test_quorum_log_rejects_initial_servers_outside_server(tmp_path):
     invalid = _run_tlc(tmp_path / "invalid", init_server="{2}", server="{1}")
     assert "of module etcd_raftModel is false" in invalid
     assert "Computing initial states" not in invalid
 
     valid = _run_tlc(tmp_path / "valid", init_server="{}", server="{}")
     assert "Model checking completed. No error has been found." in valid
+
+
+def test_more_than_one_leader_rejects_nil_server(tmp_path):
+    invalid = _run_tlc(
+        tmp_path / "invalid",
+        init_server="{1, 2, 3}",
+        server="{1, 2, 3}",
+        nil="1",
+        invariant="MoreThanOneLeaderInv",
+        module="etcd_raft_MoreThanOneLeader",
+    )
+    assert "of module etcd_raftModel is false" in invalid
+    assert "Computing initial states" not in invalid
