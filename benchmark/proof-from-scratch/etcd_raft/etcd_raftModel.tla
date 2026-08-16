@@ -514,6 +514,10 @@ Spec == Init /\ [][Next]_vars
 
 ASSUME InitServerSubset == InitServer \subseteq Server
 
+ASSUME FiniteServers == IsFiniteSet(InitServer)
+
+ASSUME NilNotServer == Nil \notin Server
+
 ASSUME DistinctRoles == /\ Leader /= Candidate
                         /\ Candidate /= Follower
                         /\ Follower /= Leader
