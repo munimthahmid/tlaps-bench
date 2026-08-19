@@ -231,8 +231,6 @@ Proof-completion targets contain one `AGENT PROOF` marker pair. Only its interio
 
 Proof-from-scratch targets contain separate `AGENT HELPERS` and `AGENT PROOF` marker pairs. The helper region accepts fresh operator definitions, module-level `USE DEF` / `HIDE DEF`, and fully proved named lemmas or theorems. Constants, variables, assumptions, instances, nested modules, shadowed names, and module-level declarations in the proof region are rejected.
 
-The fixed task scaffold exposes a common trusted proof interface to every proof-from-scratch task: `NatInductionLib!NatInduction`, `FiniteSetTheoremsLib!FS_Induction`, and `WellFoundedInductionLib!WFInduction`, plus unqualified TLAPS backend pragmas. These declarations sit outside the editable regions, so agents can use the libraries without changing imports or weakening the canonical task boundary.
-
 For both marked layouts, all fixed bytes must match the canonical target. Extra newlines at EOF are ignored; other newline-only differences fail but are not labeled cheating. Proof completion temporarily retains compatibility with the checked-in legacy unmarked dataset: when its manifest is absent and no task contains proof markers, the evaluator emits one warning and uses the previous heuristic discovery and preamble check. A malformed manifest or any marked proof-completion task without a manifest fails closed. Proof from scratch has no fallback.
 
 The runner captures canonical inputs before starting the agent and grades from a separate copy. Docker makes context read-only; native `--no-container` uses advisory `0444` permissions and is not a host-security boundary. Canonical validation failures are infrastructure errors.
@@ -346,7 +344,7 @@ Regenerate benchmark files from annotated source specs.
 
 ```bash
 uv run tlaps-bench generate
-uv run tlaps-bench generate --mode proof-from-scratch --layered
+uv run tlaps-bench generate --mode proof-from-scratch
 ```
 
 Proof-completion generation emits the layered suite described in [Layered-task trust boundary](#layered-task-trust-boundary): one read-only `<base>Model.tla` per source, one read-only `<task>Scaffold.tla` per target, an editable `<task>.tla` holding the fixed theorem statement and the marked proof region, and a `manifest.json` naming every task's source specification and exact context. Use `--legacy` only for the old generators.
