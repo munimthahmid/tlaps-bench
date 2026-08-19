@@ -16,6 +16,10 @@ Only change text inside the target's two marked regions:
 
 Put fresh same-module operator definitions, module-level `USE DEF` / `HIDE DEF` directives, and fully proved named helper lemmas in the helper region. Put the target theorem's complete proof in the proof region.
 
+# Available proof libraries
+
+The fixed task scaffold provides `NatInductionLib!NatInduction`, `FiniteSetTheoremsLib!FS_Induction`, and `WellFoundedInductionLib!WFInduction`. TLAPS backend pragmas such as `SMTT`, `PTL`, and `ExpandENABLED` are available unqualified.
+
 # Response format
 
 Return the complete target module from its module header through `====`. Return only that module, optionally inside one `tla` Markdown code fence. Do not return a patch, proof fragment, explanation, or dependency module.

@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from tlacore.tlapm.locate import find_tlapm, find_tlapm_lib
+
 REPO = Path(__file__).resolve().parents[2]
 TASK_DIR = REPO / "benchmark" / "proof-from-scratch" / "etcd_raft"
 SOURCE = REPO / "source" / "etcd_raft" / "etcd_raft.tla"
@@ -49,13 +51,15 @@ def _run_tlc(
     invariant: str = "QuorumLogInv",
     module: str = "etcd_raft_QuorumLog",
 ) -> str:
-    if shutil.which("java") is None or not TLA2TOOLS.is_file() or not COMMUNITY.is_dir():
+    tlapm = find_tlapm()
+    tlapm_lib = find_tlapm_lib(tlapm) if tlapm else None
+    if shutil.which("java") is None or not TLA2TOOLS.is_file() or not COMMUNITY.is_dir() or not tlapm_lib:
         pytest.skip("TLC dependencies are not installed; run make setup")
 
     tmp_path.mkdir()
     config = tmp_path / "QuorumLog.cfg"
     config.write_text(CONFIG.format(init_server=init_server, server=server, nil=nil, invariant=invariant))
-    classpath = os.pathsep.join((str(TLA2TOOLS), str(COMMUNITY), str(TASK_DIR)))
+    classpath = os.pathsep.join((str(TLA2TOOLS), str(COMMUNITY), str(TASK_DIR), tlapm_lib))
     result = subprocess.run(
         [
             "java",

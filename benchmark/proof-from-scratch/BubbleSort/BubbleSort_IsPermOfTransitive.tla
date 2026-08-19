@@ -1,5 +1,11 @@
 ---- MODULE BubbleSort_IsPermOfTransitive ----
 EXTENDS BubbleSort_IsPermOfTransitiveDefs
+
+LOCAL INSTANCE TLAPS
+LOCAL NatInductionLib == INSTANCE NaturalsInduction
+LOCAL FiniteSetTheoremsLib == INSTANCE FiniteSetTheorems
+LOCAL WellFoundedInductionLib == INSTANCE WellFoundedInduction
+
 \* BEGIN AGENT HELPERS
 \* END AGENT HELPERS
 THEOREM IsPermOfTransitive == 

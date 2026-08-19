@@ -1,5 +1,11 @@
 ---- MODULE GCD_GCD1 ----
 EXTENDS GCD_GCD1Defs
+
+LOCAL INSTANCE TLAPS
+LOCAL NatInductionLib == INSTANCE NaturalsInduction
+LOCAL FiniteSetTheoremsLib == INSTANCE FiniteSetTheorems
+LOCAL WellFoundedInductionLib == INSTANCE WellFoundedInduction
+
 \* BEGIN AGENT HELPERS
 \* END AGENT HELPERS
 THEOREM GCD1 == \A m \in Nat \ {0} : GCD(m, m) = m

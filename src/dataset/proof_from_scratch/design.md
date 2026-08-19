@@ -55,6 +55,12 @@ For each **top-level theorem** `T` in source file `X.tla`, generate one benchmar
 | All comments (`\*` line, `(* … *)` block) — in the benchmark and in copied deps | Delete |
 | Dependency modules referenced by EXTENDS, or by a *kept* INSTANCE (e.g. `Consensus.tla`) | Copy alongside, all proofs stripped to `PROOF OMITTED`, all comments stripped |
 
+Layered task modules additionally receive one immutable, generator-owned proof
+context before the editable regions. It exposes TLAPS backend pragmas and named
+instances of `NaturalsInduction`, `FiniteSetTheorems`, and
+`WellFoundedInduction`. This proof support is identical for every task and does
+not change the source-derived Model or Defs layers.
+
 ## Top-level theorem identification
 
 Candidates first — then the OR rule.

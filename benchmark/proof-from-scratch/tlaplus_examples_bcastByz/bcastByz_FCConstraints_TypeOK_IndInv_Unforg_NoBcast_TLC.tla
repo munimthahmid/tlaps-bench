@@ -1,5 +1,11 @@
 ---- MODULE bcastByz_FCConstraints_TypeOK_IndInv_Unforg_NoBcast_TLC ----
 EXTENDS bcastByz_FCConstraints_TypeOK_IndInv_Unforg_NoBcast_TLCDefs
+
+LOCAL INSTANCE TLAPS
+LOCAL NatInductionLib == INSTANCE NaturalsInduction
+LOCAL FiniteSetTheoremsLib == INSTANCE FiniteSetTheorems
+LOCAL WellFoundedInductionLib == INSTANCE WellFoundedInduction
+
 \* BEGIN AGENT HELPERS
 \* END AGENT HELPERS
 THEOREM FCConstraints_TypeOK_IndInv_Unforg_NoBcast_TLC ==  

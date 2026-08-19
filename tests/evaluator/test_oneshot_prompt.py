@@ -105,6 +105,9 @@ def test_proof_from_scratch_one_shot_prompt_enforces_marked_regions(tmp_path):
     assert "fully proved named helper lemmas" in prompt
     assert "Every helper `LEMMA` or `THEOREM` must be named and fully proved" in prompt
     assert "Do not add or change dependency modules, imports" in prompt
+    assert "NatInductionLib!NatInduction" in prompt
+    assert "FiniteSetTheoremsLib!FS_Induction" in prompt
+    assert "WellFoundedInductionLib!WFInduction" in prompt
     assert "Do not return a patch" in prompt
     assert "Keep editing" not in prompt
     assert "check_proof_bin" not in prompt
@@ -120,4 +123,7 @@ def test_proof_from_scratch_agentic_prompt_enforces_same_boundary(tmp_path):
     assert r"\* BEGIN AGENT PROOF" in prompt
     assert "Do not change the module header, imports, marker lines" in prompt
     assert "Every helper `LEMMA` or `THEOREM` must be named and fully proved" in prompt
+    assert "NatInductionLib!NatInduction" in prompt
+    assert "FiniteSetTheoremsLib!FS_Induction" in prompt
+    assert "WellFoundedInductionLib!WFInduction" in prompt
     assert "check_proof_bin Target_Goal.tla --mode proof-from-scratch" in prompt

@@ -18,7 +18,15 @@ Put fresh same-module operator definitions, module-level `USE DEF` / `HIDE DEF` 
 
 # Proving and iterating
 
-The TLAPS standard library is at `{tlapm_lib}`, and the Community Modules library is at `$COMMUNITY_LIB`. You may read and reference either library, but do not modify them. You may run:
+The TLAPS standard library is at `{tlapm_lib}`, and the Community Modules library is at `$COMMUNITY_LIB`. You may inspect both libraries, but cite only declarations already brought into scope by the task and its read-only context. Do not modify either library.
+
+Every task's fixed scaffold provides these standard proof interfaces:
+
+- `NatInductionLib!NatInduction`
+- `FiniteSetTheoremsLib!FS_Induction`
+- `WellFoundedInductionLib!WFInduction`
+
+TLAPS backend pragmas such as `SMTT`, `PTL`, and `ExpandENABLED` are available unqualified. You may run:
 
 ```sh
 {tlapm_path}/bin/tlapm -I {tlapm_lib} -I "$COMMUNITY_LIB" {benchmark_basename}
