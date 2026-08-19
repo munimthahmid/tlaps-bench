@@ -1,5 +1,11 @@
 ---- MODULE Voting_proof_ChoosableThm_T ----
 EXTENDS Voting_proof_ChoosableThm_TDefs
+
+LOCAL INSTANCE TLAPS
+LOCAL NatInductionLib == INSTANCE NaturalsInduction
+LOCAL FiniteSetTheoremsLib == INSTANCE FiniteSetTheorems
+LOCAL WellFoundedInductionLib == INSTANCE WellFoundedInduction
+
 \* BEGIN AGENT HELPERS
 \* END AGENT HELPERS
 THEOREM ChoosableThm_T ==

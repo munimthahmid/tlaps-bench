@@ -1,5 +1,11 @@
 ---- MODULE Voting_QuorumNonEmpty ----
 EXTENDS Voting_QuorumNonEmptyDefs
+
+LOCAL INSTANCE TLAPS
+LOCAL NatInductionLib == INSTANCE NaturalsInduction
+LOCAL FiniteSetTheoremsLib == INSTANCE FiniteSetTheorems
+LOCAL WellFoundedInductionLib == INSTANCE WellFoundedInduction
+
 \* BEGIN AGENT HELPERS
 \* END AGENT HELPERS
 THEOREM QuorumNonEmpty == \A Q \in Quorum : Q # {}

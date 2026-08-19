@@ -15,6 +15,7 @@ from common.proof_from_scratch_contract import (
     END_AGENT_HELPERS,
     END_AGENT_PROOF,
 )
+from dataset.proof_from_scratch.generate import PROOF_LIBRARY_CONTEXT
 
 REPO = Path(__file__).resolve().parents[2]
 CHECKER = REPO / "src" / "common" / "check_proof.py"
@@ -33,6 +34,9 @@ def _task(*, helper: str = "", proof: str = "PROOF OBVIOUS") -> str:
         (
             "---- MODULE Task ----",
             "EXTENDS Model",
+            "",
+            PROOF_LIBRARY_CONTEXT,
+            "",
             BEGIN_AGENT_HELPERS,
             helper,
             END_AGENT_HELPERS,
@@ -105,3 +109,22 @@ def test_real_checker_accepts_helpers_and_rejects_forbidden_declaration(tmp_path
     assert invalid.returncode == 1, invalid.stdout + invalid.stderr
     assert "HELPER_REGION_VIOLATION" in invalid.stdout
     assert "CHEAT-DETECTED: editable_regions_valid" in invalid.stdout
+
+
+def test_real_checker_resolves_fixed_proof_library_theorems(tmp_path):
+    result = _run_checker(
+        tmp_path,
+        _task(
+            helper=(
+                "LEMMA ProofLibrariesAvailable == TRUE\n"
+                "<1>1. USE NatInductionLib!NatInduction\n"
+                "<1>2. USE FiniteSetTheoremsLib!FS_Induction\n"
+                "<1>3. USE WellFoundedInductionLib!WFInduction\n"
+                "<1>4. QED OBVIOUS"
+            ),
+            proof="PROOF OBVIOUS",
+        ),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS — target goal genuinely proved" in result.stdout
